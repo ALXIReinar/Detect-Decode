@@ -8,8 +8,8 @@ from typing import Literal
 from starlette.requests import Request
 
 from core.config_dir.config import env
-from core.utils.anything import create_log_dirs
-from core.web.utils.ip_taker import get_client_ip
+from core.utils_general.anything import create_log_dirs
+from web.utils.ip_taker import get_client_ip
 
 create_log_dirs()
 
