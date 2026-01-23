@@ -10,7 +10,7 @@ from torch.utils.data import Dataset
 from torchvision import tv_tensors
 from torchvision.transforms import v2
 
-from core.utils_general.logger_config import log_event
+from ml.logger_config import log_event
 
 
 class DetectorAugment(nn.Module):
@@ -59,15 +59,19 @@ class DetectorAugment(nn.Module):
 
 
 class OCRDetectorDataset(Dataset):
+    classes = ['word']
+    img_formats = {'.png', '.jpg'}
+
     def __init__(self, path: str | Path, transform: None | Literal['train', 'val'] = None):
         self.path = path
         self.classes = ['word']
+        self.img_formats = {'.png', '.jpg'}
 
         self.class_to_idx = {class_name: idx for idx, class_name in enumerate(self.classes)}
         self.idx_to_class = {idx: class_name for idx, class_name in enumerate(self.classes)}
 
         self.transform = DetectorAugment(transform) if transform else None
-        self.data: list[dict] = []
+        self.data: list[dict] = self.create_data()
 
     def create_data(self):
         target_data = []
@@ -78,7 +82,9 @@ class OCRDetectorDataset(Dataset):
 
         for im_f in path_imgs.iterdir():
             ann_f = path_anns / f'{im_f.stem}.xml'
-            if not ann_f.exists():
+            valid_extension = im_f.suffix in self.img_formats
+
+            if not ann_f.exists() or not valid_extension:
                 continue
 
             img_data = {}
@@ -99,7 +105,7 @@ class OCRDetectorDataset(Dataset):
             with Image.open(im_f) as im:
                 w, h = im.size
             img_data['size_img'] = [w, h]
-            img_data['depth'] = 1
+            img_data['depth'] = 3
 
             objs_ann = []
 
@@ -138,7 +144,7 @@ class OCRDetectorDataset(Dataset):
                     obj_ann = {
                         'label': self.class_to_idx['word'],
                         'bbox': bbox,
-                        'text': word.attrib.get('text', '')
+                        'word': word.attrib.get('text', '')
                     }
 
                     objs_ann.append(obj_ann)
@@ -173,11 +179,12 @@ class OCRDetectorDataset(Dataset):
             img = np.load(np_f)
             img = torch.as_tensor(img)
         else:
-            img = Image.open(path_img).convert('L')
+            img = Image.open(path_img).convert('l')
 
         "Формируем метки и GTB"
         W, H = sample['size_img']
         boxes = [obj_ann['bbox'] for obj_ann in sample['objs_ann']]
+        words = [obj_ann['word'] for obj_ann in sample['objs_ann']]
         labels = [obj_ann['label'] for obj_ann in sample['objs_ann']]
 
         boxes = tv_tensors.BoundingBoxes(
@@ -187,7 +194,8 @@ class OCRDetectorDataset(Dataset):
         )
         target = {
             "boxes": boxes.to(torch.float32),
-            "labels": torch.tensor(labels, dtype=torch.int64)
+            "labels": torch.tensor(labels, dtype=torch.int64),
+            "words": words,
         }
 
         "Применяем трансформации"
@@ -198,5 +206,5 @@ class OCRDetectorDataset(Dataset):
 
     @staticmethod
     def collate_fn(batch):
-        imgs, bboxes = list(zip(*batch))
-        return torch.stack(imgs), bboxes
+        imgs, targets = list(zip(*batch))
+        return torch.stack(imgs), targets

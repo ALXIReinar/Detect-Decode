@@ -5,7 +5,10 @@ import logging
 from logging.config import dictConfig
 from typing import Literal
 
-from ml.config import env
+from starlette.requests import Request
+
+from web.config import env
+from web.utils.ip_taker import get_client_ip
 
 
 "Init Log dirs"
@@ -49,7 +52,8 @@ logger_settings = {
             "()": "colorlog.ColoredFormatter",
             "format": "%(log_color)s%(levelname)-8s%(reset)s | "
                       "\033[32mD%(asctime)s\033[0m | "
-                      "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s "
+                      "\033[34m%(method)s\033[0m \033[36m%(url)s\033[0m | "
+                      "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s - \033[34m%(ip)s\033[0m "
                       "%(message)s",
             "datefmt": "%d-%m-%Y T%H:%M:%S",
             "log_colors": {
@@ -64,7 +68,8 @@ logger_settings = {
             "()": "colorlog.ColoredFormatter",
             "format": "%(levelname)-8s | "
                       "D%(asctime)s | "
-                      "%(location)s: def %(func)s(): line - %(line)d "
+                      "%(method)s %(url)s | "
+                      "%(location)s: def %(func)s(): line - %(line)d - %(ip)s "
                       "%(message)s",
             "datefmt": "%d-%m-%Y T%H:%M:%S",
             "log_colors": {
@@ -137,18 +142,25 @@ logging.config.dictConfig(logger_settings)
 logger = logging.getLogger('prod_log')
 
 
-def log_event(event: str, *args, level: Literal['DEBUG','INFO','WARNING','ERROR','CRITICAL'] = 'INFO'):
+def log_event(event: str, *args, request: Request = None, level: Literal['DEBUG','INFO','WARNING','ERROR','CRITICAL'] = 'INFO'):
     cur_call = inspect.currentframe()
     outer = inspect.getouterframes(cur_call)[1]
     filename = os.path.relpath(outer.filename)
     func = outer.function
     line = outer.lineno
 
+    meth, url, ip = '', '', ''
+    if isinstance(request, Request):
+        meth, url = request.method, request.url
+        ip = request.state.client_ip if hasattr(request.state, 'client_ip') else get_client_ip(request)
 
     message = event % args if args else event
 
     logger.log(lvls[level], message, extra={
+        'method': meth,
         'location': filename,
         'func': func,
         'line': line,
+        'url': url,
+        'ip': ip
     })
