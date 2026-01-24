@@ -142,8 +142,8 @@ class OCRDetectorDataset(Dataset):
                         continue
 
                     obj_ann = {
-                        'label': self.class_to_idx['word'],
                         'bbox': bbox,
+                        'label': self.class_to_idx['word'],
                         'word': word.attrib.get('text', '')
                     }
 
@@ -184,8 +184,8 @@ class OCRDetectorDataset(Dataset):
         "Формируем метки и GTB"
         W, H = sample['size_img']
         boxes = [obj_ann['bbox'] for obj_ann in sample['objs_ann']]
-        words = [obj_ann['word'] for obj_ann in sample['objs_ann']]
         labels = [obj_ann['label'] for obj_ann in sample['objs_ann']]
+        words = [obj_ann['word'] for obj_ann in sample['objs_ann']]
 
         boxes = tv_tensors.BoundingBoxes(
             boxes,
@@ -206,5 +206,24 @@ class OCRDetectorDataset(Dataset):
 
     @staticmethod
     def collate_fn(batch):
-        imgs, targets = list(zip(*batch))
-        return torch.stack(imgs), targets
+        """
+        batch: список элементов вида (img, target)
+               target = {'boxes': [Ni, 4], 'labels': [Ni], 'words': [...]}
+
+        Возвращает:
+            imgs: [B, C, H, W]
+            targets: list of [Mi, 4] (xyxy)
+            words: list of слов для каждой картинки
+        """
+        imgs, targets, words = [], [], []
+
+        for img, target in batch:
+            imgs.append(img)
+            boxes = target["boxes"]
+            if boxes.numel() == 0:
+                boxes = torch.zeros((0, 4), dtype=torch.float32)
+            targets.append(boxes)
+            words.append(target["words"])
+
+        imgs = torch.stack(imgs, dim=0)  # [B, C, H, W]
+        return imgs, targets, words
