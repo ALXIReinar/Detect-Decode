@@ -9,6 +9,7 @@ from torch import nn
 from torch.utils.data import Dataset
 from torchvision import tv_tensors
 from torchvision.transforms import v2
+from ultralytics.utils.ops import xyxy2xywh
 
 from ml.logger_config import log_event
 
@@ -204,26 +205,64 @@ class OCRDetectorDataset(Dataset):
 
         return img, target
 
+    # @staticmethod
+    # def collate_fn(batch):
+    #     """
+    #     batch: список элементов вида (img, target)
+    #            target = {'boxes': [Ni, 4], 'labels': [Ni], 'words': [...]}
+    #
+    #     Возвращает:
+    #         imgs: [B, C, H, W]
+    #         targets: list of [Mi, 4] (xyxy)
+    #         words: list of слов для каждой картинки
+    #     """
+    #     imgs, targets, words = [], [], []
+    #
+    #     for img, target in batch:
+    #         imgs.append(img)
+    #         boxes = target["boxes"]
+    #         if boxes.numel() == 0:
+    #             boxes = torch.zeros((0, 4), dtype=torch.float32)
+    #         targets.append(boxes)
+    #         words.append(target["words"])
+    #
+    #     imgs = torch.stack(imgs, dim=0)  # [B, C, H, W]
+    #     return imgs, targets, words
+
     @staticmethod
     def collate_fn(batch):
-        """
-        batch: список элементов вида (img, target)
-               target = {'boxes': [Ni, 4], 'labels': [Ni], 'words': [...]}
+        images, targets, words = [], [], []
+        for i, (img, target) in enumerate(batch):
+            # img: [1, H, W]
+            # boxes: [M, 4] в формате xyxy (пиксели)
 
-        Возвращает:
-            imgs: [B, C, H, W]
-            targets: list of [Mi, 4] (xyxy)
-            words: list of слов для каждой картинки
-        """
-        imgs, targets, words = [], [], []
+            images.append(img)
+            words.append(target['words'])
 
-        for img, target in batch:
-            imgs.append(img)
-            boxes = target["boxes"]
-            if boxes.numel() == 0:
-                boxes = torch.zeros((0, 4), dtype=torch.float32)
-            targets.append(boxes)
-            words.append(target["words"])
+            boxes = target['boxes']
+            if boxes.numel() > 0:
+                "Перевод в xywh + Нормализованные"
+                h, w = img.shape[1:]
+                new_boxes = boxes.clone()
+                # xyxy -> cxcywh
+                cw = new_boxes[:, 2] - new_boxes[:, 0]
+                ch = new_boxes[:, 3] - new_boxes[:, 1]
+                cx = new_boxes[:, 0] + cw / 2
+                cy = new_boxes[:, 1] + ch / 2
 
-        imgs = torch.stack(imgs, dim=0)  # [B, C, H, W]
-        return imgs, targets, words
+                # Нормализация
+                new_boxes[:, 0] = cx / w
+                new_boxes[:, 1] = cy / h
+                new_boxes[:, 2] = cw / w
+                new_boxes[:, 3] = ch / h
+
+                "Итоговый формат: [i, 0, cx, cy, w, h]"
+                # b_s, cls_idx, xywh - соответственно
+                num_obj = new_boxes.shape[0]
+                batch_idx = torch.full((num_obj, 1), i)
+                class_id = torch.zeros((num_obj, 1))
+
+                target_sample = torch.cat([batch_idx, class_id, new_boxes], dim=1)
+                targets.append(target_sample)
+
+        return torch.stack(images), torch.cat(targets, dim=0), words
