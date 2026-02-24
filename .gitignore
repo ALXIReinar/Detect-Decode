@@ -165,3 +165,9 @@ secrets/
 dataset/
 *deprecated/
 *.pth
+.kiro/
+ml_docs/
+visualizations/
+quick_check.py
+test_resolution.py
+*.png

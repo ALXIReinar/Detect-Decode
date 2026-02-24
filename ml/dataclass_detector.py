@@ -2,76 +2,82 @@ from xml.etree import ElementTree as ET
 from pathlib import Path
 from typing import Literal
 
-import numpy as np
 import torch
 from PIL import Image
 from torch import nn
 from torch.utils.data import Dataset
 from torchvision import tv_tensors
 from torchvision.transforms import v2
-from ultralytics.utils.ops import xyxy2xywh
 
 from ml.logger_config import log_event
 
 
 class DetectorAugment(nn.Module):
-    def __init__(self, mode: Literal['train', 'val']):
+    def __init__(self, mode: Literal['train', 'val'], img_size: int = 640):
+        """
+        Args:
+            mode: 'train' или 'val'
+            img_size: размер выходного изображения (640, 960, 1280, etc.)
+        """
         super().__init__()
         self.mode = mode
-        inference_transform = v2.Compose(
-            [
-                v2.ToImage(),
-                v2.ToDtype(dtype=torch.uint8, scale=True),
-                v2.Grayscale(),
-                v2.Resize((640, 640)), # Уменьшение изображения в 4,7 раза от изначального при разрешении ~2400х3500
-                v2.ToDtype(dtype=torch.float32, scale=True),
-                v2.Normalize(std=(0.5,), mean=(0.5,)),   # для более точных значений - https://share.google/aimode/1bhH2c9qWe2aGI8ia
-            ]
-        )
-        train_transform = v2.Compose(
-            [
-                v2.ToImage(),
-                v2.ToDtype(dtype=torch.uint8, scale=True),
-                v2.Grayscale(),
-                v2.RandomAffine(
-                    degrees=0,
-                    translate=(0.2, 0.2),
-                    scale=(0.8, 1.2)
-                ),
-                v2.ColorJitter(
-                    brightness=(0.8, 1.2),
-                    contrast=(0.8, 1.2),
-                    saturation=(0.8, 1.2),
-                    hue=(-0.2, 0.2),
-                ),
-                v2.Resize((640, 640)),
-                v2.SanitizeBoundingBoxes(min_size=2),
-                v2.ToDtype(dtype=torch.float32, scale=True),
-                v2.Normalize(std=(0.5,), mean=(0.5,)),
-            ]
-        )
-        self.transforms = {
-            'train': train_transform,
-            'val': inference_transform,
-        }
+        self.img_size = img_size
+        
+        # CPU preprocessing - только базовая подготовка
+        self.cpu_transform = v2.Compose([
+            v2.ToImage(),
+            v2.ToDtype(dtype=torch.uint8, scale=True),
+            v2.Grayscale(),
+            v2.Resize((img_size, img_size)),  # Параметризованный размер
+            v2.ToDtype(dtype=torch.float32, scale=True),
+        ])
+        
+        # GPU augmentations - тяжелые операции на GPU
+        self.gpu_train_transform = v2.Compose([
+            v2.RandomAffine(
+                degrees=0,
+                translate=(0.1, 0.1),
+                scale=(0.9, 1.1)
+            ),
+            v2.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
+            v2.RandomAutocontrast(p=0.5),
+            v2.SanitizeBoundingBoxes(min_size=2),
+        ])
 
-    def forward(self, *args, **kwargs):
-        return self.transforms[self.mode](*args, **kwargs)
+    def forward(self, img, target=None):
+        # CPU preprocessing (всегда)
+        if target is not None:
+            img, target = self.cpu_transform(img, target)
+            # Возвращаем всегда 2 значения для совместимости
+            return img, target
+        else:
+            img = self.cpu_transform(img)
+            return img
+
+    # def forward(self, *args, **kwargs):
+    #     return self.cpu_transform(*args, **kwargs)
 
 
 class OCRDetectorDataset(Dataset):
     classes = ['word']
     img_formats = {'.png', '.jpg'}
 
-    def __init__(self, path: str | Path, transform: None | Literal['train', 'val'] = None):
+    def __init__(self, path: str | Path, transform: None | Literal['train', 'val'] = None, img_size: int = 640):
+        """
+        Args:
+            path: путь к датасету
+            transform: 'train' или 'val' для применения трансформаций
+            img_size: размер выходного изображения (640, 960, 1280, etc.)
+        """
         self.path = path
         self.classes = ['word']
         self.img_formats = {'.png', '.jpg'}
+        self.img_size = img_size
 
         self.class_to_idx = {class_name: idx for idx, class_name in enumerate(self.classes)}
         self.idx_to_class = {idx: class_name for idx, class_name in enumerate(self.classes)}
 
-        self.transform = DetectorAugment(transform) if transform else None
+        self.transform = DetectorAugment(transform, img_size=img_size) if transform else None
         self.data: list[dict] = self.create_data()
 
     def create_data(self):
@@ -94,12 +100,6 @@ class OCRDetectorDataset(Dataset):
 
             # путь к изображению
             img_data['path_img'] = im_f
-
-            # кэш изображения на диске
-            np_f = im_f.with_suffix('.npy')
-            if not np_f.exists():
-                np.save(np_f, np.array(Image.open(im_f).convert('L')))
-
             img_data['img_name'] = im_f.name
 
             # размер изображения
@@ -135,7 +135,7 @@ class OCRDetectorDataset(Dataset):
                         min(xs),  # x1
                         min(ys),  # y1
                         max(xe),  # x2
-                        max(ye)  # y2
+                        max(ye),  # y2
                     ]
 
                     # бракованные координаты
@@ -173,14 +173,9 @@ class OCRDetectorDataset(Dataset):
     def __getitem__(self, idx):
         sample = self.data[idx]
 
-        "Находим кэшированный образец-картинку"
+        "Загружаем изображение напрямую"
         path_img = sample['path_img']
-        np_f = Path(path_img).with_suffix(".npy")
-        if np_f.exists():
-            img = np.load(np_f)
-            img = torch.as_tensor(img)
-        else:
-            img = Image.open(path_img).convert('l')
+        img = Image.open(path_img).convert('L')
 
         "Формируем метки и GTB"
         W, H = sample['size_img']
@@ -231,38 +226,57 @@ class OCRDetectorDataset(Dataset):
 
     @staticmethod
     def collate_fn(batch):
-        images, targets, words = [], [], []
-        for i, (img, target) in enumerate(batch):
-            # img: [1, H, W]
-            # boxes: [M, 4] в формате xyxy (пиксели)
-
+        """
+        Оптимизированный collate_fn с минимальными операциями на CPU.
+        Конвертация bbox в нужный формат происходит векторизованно.
+        """
+        images = []
+        all_boxes = []
+        all_batch_idx = []
+        words = []
+        
+        for i, (img, target) in enumerate(batch):  # ← ИСПРАВЛЕНО: только 2 значения
             images.append(img)
             words.append(target['words'])
-
+            
             boxes = target['boxes']
             if boxes.numel() > 0:
-                "Перевод в xywh + Нормализованные"
-                h, w = img.shape[1:]
-                new_boxes = boxes.clone()
-                # xyxy -> cxcywh
-                cw = new_boxes[:, 2] - new_boxes[:, 0]
-                ch = new_boxes[:, 3] - new_boxes[:, 1]
-                cx = new_boxes[:, 0] + cw / 2
-                cy = new_boxes[:, 1] + ch / 2
-
-                # Нормализация
-                new_boxes[:, 0] = cx / w
-                new_boxes[:, 1] = cy / h
-                new_boxes[:, 2] = cw / w
-                new_boxes[:, 3] = ch / h
-
-                "Итоговый формат: [i, 0, cx, cy, w, h]"
-                # b_s, cls_idx, xywh - соответственно
-                num_obj = new_boxes.shape[0]
-                batch_idx = torch.full((num_obj, 1), i)
-                class_id = torch.zeros((num_obj, 1))
-
-                target_sample = torch.cat([batch_idx, class_id, new_boxes], dim=1)
-                targets.append(target_sample)
-
-        return torch.stack(images), torch.cat(targets, dim=0), words
+                num_boxes = boxes.shape[0]
+                all_boxes.append(boxes)
+                all_batch_idx.append(torch.full((num_boxes,), i, dtype=torch.long))
+        
+        # Стекаем изображения
+        images = torch.stack(images, dim=0)  # [B, 1, H, W]
+        
+        # Векторизованная конвертация всех bbox сразу
+        if all_boxes:
+            all_boxes = torch.cat(all_boxes, dim=0)  # [N, 4] xyxy
+            all_batch_idx = torch.cat(all_batch_idx, dim=0)  # [N]
+            
+            h, w = images.shape[2:]
+            
+            # xyxy -> cxcywh (векторизованно)
+            box_w = all_boxes[:, 2] - all_boxes[:, 0]
+            box_h = all_boxes[:, 3] - all_boxes[:, 1]
+            cx = all_boxes[:, 0] + box_w * 0.5
+            cy = all_boxes[:, 1] + box_h * 0.5
+            
+            # Нормализация (векторизованно)
+            normalized_boxes = torch.stack([
+                cx / w,
+                cy / h,
+                box_w / w,
+                box_h / h
+            ], dim=1)  # [N, 4]
+            
+            # Формируем финальный тензор [N, 6]: [batch_idx, cls, cx, cy, w, h]
+            cls_idx = torch.zeros((normalized_boxes.shape[0], 1), dtype=torch.float32)
+            targets = torch.cat([
+                all_batch_idx.unsqueeze(1).float(),
+                cls_idx,
+                normalized_boxes
+            ], dim=1)
+        else:
+            targets = torch.zeros((0, 6), dtype=torch.float32)
+        
+        return images, targets, words

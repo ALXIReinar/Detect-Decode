@@ -1,5 +1,4 @@
 import torch
-from torch import nn
 from ultralytics import YOLO
 from ultralytics.nn.modules import Detect
 
@@ -11,7 +10,7 @@ m = yolov8n.model
 
 # 1. Меняем входной слой
 old_conv = m.model[0].conv
-m.model[0].conv = nn.Conv2d(
+m.model[0].conv = torch.nn.Conv2d(
     1, old_conv.out_channels,
     kernel_size=old_conv.kernel_size,
     stride=old_conv.stride,
@@ -19,11 +18,21 @@ m.model[0].conv = nn.Conv2d(
     bias=old_conv.bias is not None
 )
 
-# 2. Настраиваем классы
+"Настраиваем классы"
 nc_names = OCRDetectorDataset.classes
 new_nc = len(nc_names)
 m.nc = new_nc
 m.classes = {idx: cls_n for idx, cls_n in enumerate(nc_names)}
+# "Заготовки с использованием предобученных весов и с 3мя каналами во входном слое"
+# yolov8n = YOLO('yolov8n.yaml')
+# m = yolov8n.model
+#
+#
+# "Настраиваем классы"
+# nc_names = OCRDetectorDataset.classes
+# new_nc = len(nc_names)
+# m.nc = new_nc
+# m.classes = {idx: cls_n for idx, cls_n in enumerate(nc_names)}
 
 "Пересобираем Detect"
 old_detect = m.model[-1]
