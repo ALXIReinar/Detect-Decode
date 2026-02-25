@@ -12,10 +12,11 @@ from types import SimpleNamespace
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR
 from datetime import datetime
-from ml.dataclass_detector import OCRDetectorDataset
+from ml.dataset_class.dataclass_detector import OCRDetectorDataset
 from torch.utils.data import DataLoader
 
-from ml.utils.train_run_plots import plot_validation_metrics, plot_training_dynamics, plot_train_val_box_cls_dfl
+from ml.utils.train_run_plots import plot_loss_dynamics, plot_metrics_dynamics, plot_lr_chronology
+
 
 # ======================================================================================================================
 # Датасет, Даталоадеры
@@ -26,7 +27,6 @@ def train_run():
     "Гиперпараметры"
     batch_size_train = 4  # Уменьшено для экономии памяти GPU
     batch_size_val = 4
-    batch_size_test = 4
     accumulation_steps = 2  # Эффективный batch = 4 * 2 = 8
     dataload_workers = 6
     prefetch_factor = 2
@@ -38,7 +38,6 @@ def train_run():
 
     train_dset = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'train', 'train', img_size)
     val_dset = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'val', 'val', img_size)
-    test_dset = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'test', 'val', img_size)
 
     train_loader = DataLoader(
         dataset=train_dset,
@@ -53,15 +52,6 @@ def train_run():
     val_loader = DataLoader(
         dataset=val_dset,
         batch_size=batch_size_val,
-        num_workers=dataload_workers,
-        collate_fn=OCRDetectorDataset.collate_fn,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=prefetch_factor
-    )
-    test_loader = DataLoader(
-        dataset=val_dset,
-        batch_size=batch_size_test,
         num_workers=dataload_workers,
         collate_fn=OCRDetectorDataset.collate_fn,
         pin_memory=True,
@@ -146,7 +136,7 @@ def train_run():
             opt.zero_grad()
 
 
-        log_event(f"\033[32mTRAINING\033[0m | Epoch {epoch}, train_loss={last_losses_train[-1]:.4f}, box_loss={last_losses_train[0]:.4f}, cls_loss={last_losses_train[1]:.4f}, dfl_loss={last_losses_train[2]:.4f}")
+        log_event(f"\033[32mTRAINING\033[0m | Epoch {epoch} | train_loss=\033[33m{last_losses_train[-1]:.4f}\033[0m, box_loss={last_losses_train[0]:.4f}, cls_loss={last_losses_train[1]:.4f}, dfl_loss={last_losses_train[2]:.4f}")
         train_loss.append(last_losses_train)
 
     # ======================================================================================================================
@@ -159,7 +149,7 @@ def train_run():
             stats = []
 
             val_loop = tqdm(val_loader, leave=False, desc=f'Validation \033[36m#{epoch}\033[0m')
-            for img, targets, words in val_loader:
+            for img, targets, words in val_loop:
 
                 img = img.to(env.device, non_blocking=True)
                 targets = targets.to(env.device, non_blocking=True)
@@ -189,54 +179,52 @@ def train_run():
                 )
 
                 "Метрики"
+                # Подготавливаем GT bbox в формате xyxy (пиксели)
+                h, w = img_size, img_size
                 for i, pred in enumerate(preds_nms):
-                    # Фильтруем таргеты: берем только те, где batch_idx == i
+                    if pred.shape[0] == 0:  # Нет предсказаний
+                        continue
+                    
+                    # Фильтруем GT для текущего изображения
                     gt_mask = (targets[:, 0] == i)
-                    gt = targets[gt_mask]  # Теперь здесь [num_gt, 6] (batch_idx, cls, x, y, w, h)
-
-                    nl = gt.shape[0]
-                    npr = pred.shape[0]
+                    gt = targets[gt_mask]  # [num_gt, 6]: (batch_idx, cls, cx, cy, w, h)
+                    
+                    nl = gt.shape[0]  # Количество GT bbox
+                    npr = pred.shape[0]  # Количество предсказанных bbox
+                    
+                    if nl == 0:  # Нет GT bbox
+                        continue
+                    
+                    # Конвертируем GT из нормализованного xywh в xyxy (пиксели)
+                    gt_boxes = gt[:, 2:].clone()  # [nl, 4]: (cx, cy, w, h)
+                    
+                    # Денормализация и конвертация xywh -> xyxy (векторизованно)
+                    gt_boxes[:, [0, 2]] *= w  # cx, w
+                    gt_boxes[:, [1, 3]] *= h  # cy, h
+                    
+                    cx, cy, bw, bh = gt_boxes.unbind(1)
+                    gt_xyxy = torch.stack([
+                        cx - bw / 2,  # x1
+                        cy - bh / 2,  # y1
+                        cx + bw / 2,  # x2
+                        cy + bh / 2   # y2
+                    ], dim=1)  # [nl, 4]
+                    
+                    # Вычисляем IoU между всеми предсказаниями и GT
+                    iou = box_iou(pred[:, :4], gt_xyxy)  # [npr, nl]
+                    
+                    # Для каждого порога IoU проверяем, есть ли совпадение
                     correct = torch.zeros(npr, len(iouv), dtype=torch.bool, device=env.device)
-
-                    # Подготовка правильных координат GT для сопоставления
-
-                    # В targets xywh (нормализованные), а NMS выдает xyxy (в пикселях)
-                    if nl:
-                        # 1. Переводим GT из xywh в xyxy
-                        # 2. Денормализуем (умножаем на размер изображения, например 640)
-                        h, w = img_size, img_size
-                        gt_boxes = gt[:, 2:].clone()
-
-                        # Конвертация xywh -> xyxy
-                        gn = torch.tensor([w, h, w, h], device=env.device)
-                        gt_boxes[:, [0, 2]] *= w # x, w
-                        gt_boxes[:, [1, 3]] *= h # y, h
-
-                        x, y, w_gt, h_gt = gt_boxes.unbind(1)
-                        gt_xyxy = torch.stack([
-                            x - w_gt / 2, y - h_gt / 2,
-                            x + w_gt / 2, y + h_gt / 2
-                        ], dim=1)
-                    else:
-                        gt_xyxy = torch.zeros((0, 4), device=env.device)
-
-                    if nl:
-                        # Теперь gt_xyxy имеет размерность [nl, 4]
-                        iou = box_iou(pred[:, :4], gt_xyxy)
-                        for j in range(len(iouv)):
-                            correct[:, j] = (iou >= iouv[j]).any(1)
-                    if npr > 0:
-                        # stats ожидает:
-                        # 1. correct [npr, 10]
-                        # 2. conf [npr]
-                        # 3. pred_cls [npr]
-                        # 4. target_cls [nl] <-- ВАЖНО: только истинные классы изображения
-                        stats.append((
-                            correct.cpu(),
-                            pred[:, 4].cpu(),
-                            pred[:, 5].cpu(),
-                            gt[:, 1].cpu()
-                        ))
+                    for j in range(len(iouv)):
+                        correct[:, j] = (iou >= iouv[j]).any(1)  # [npr]
+                    
+                    # Сохраняем статистики
+                    stats.append((
+                        correct.cpu(),
+                        pred[:, 4].cpu(),  # confidence
+                        pred[:, 5].cpu(),  # predicted class
+                        gt[:, 1].cpu()     # target class
+                    ))
 
         lr_sched.step()
         lr = lr_sched.get_last_lr()[0]
@@ -270,7 +258,7 @@ def train_run():
         map5095_list.append(map5095)
         val_loss.append(last_losses_val)
 
-        log_event(f"\033[34mVALIDATION\033[0m Epoch {epoch} | val_loss={last_losses_val[-1]:.4f}, box_loss={last_losses_val[0]:.4f}, cls_loss={last_losses_val[1]:.4f}, dfl_loss={last_losses_val[2]:.4f} | mAP@0.5={map50:.4f} | mAP@0.5:0.95={map5095:.4f}")
+        log_event(f"\033[34mVALIDATION\033[0m Epoch {epoch} | val_loss=\033[31m{last_losses_val[-1]:.4f}\033[0m, box_loss={last_losses_val[0]:.4f}, cls_loss={last_losses_val[1]:.4f}, dfl_loss={last_losses_val[2]:.4f} | mAP@0.5=\033[33m{map50:.4f}\033[0m | mAP@0.5:0.95=\033[36m{map5095:.4f}\033[0m")
 
         history = {
             "general_metrics": {
@@ -310,12 +298,11 @@ def train_run():
 
         plateau_loss_epochs += 1
 
-    plot_validation_metrics(history, models_dir / 'validation.png')
-    plot_training_dynamics(history, models_dir / 'training.png')
-    plot_train_val_box_cls_dfl(history, models_dir / 'loss_components.png')
+    plot_loss_dynamics(history, models_dir / 'loss_distribution.png')
+    plot_metrics_dynamics(history, models_dir / 'metrics.png')
+    plot_lr_chronology(history, models_dir / 'chronology.png')
 
-    log_event(f'{'>>>' * 10} Обучение завершено {'<<<' * 10}')
-
+    log_event(f'\033[34m{'>>>' * 10} Обучение завершено {'<<<' * 10}\033[0m')
 
 if __name__ == '__main__':
     train_run()

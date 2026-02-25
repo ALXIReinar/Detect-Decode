@@ -54,8 +54,6 @@ class DetectorAugment(nn.Module):
             img = self.cpu_transform(img)
             return img
 
-    # def forward(self, *args, **kwargs):
-    #     return self.cpu_transform(*args, **kwargs)
 
 
 class OCRDetectorDataset(Dataset):
