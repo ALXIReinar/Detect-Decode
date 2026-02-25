@@ -5,12 +5,18 @@ import logging
 from logging.config import dictConfig
 from typing import Literal
 
-from starlette.requests import Request
+from ml.config import env
 
-from core.config_dir.config import env
-from core.utils.anything import create_log_dirs
-from core.web.utils.ip_taker import get_client_ip
 
+"Init Log dirs"
+def create_log_dirs():
+    env.LOG_DIR.mkdir(exist_ok=True)
+
+    debug, info_warn, err = env.LOG_DIR / 'debug', env.LOG_DIR / 'info_warning', env.LOG_DIR / 'error'
+
+    debug.mkdir(exist_ok=True, parents=True)
+    info_warn.mkdir(exist_ok=True, parents=True)
+    err.mkdir(exist_ok=True, parents=True)
 create_log_dirs()
 
 
@@ -43,8 +49,7 @@ logger_settings = {
             "()": "colorlog.ColoredFormatter",
             "format": "%(log_color)s%(levelname)-8s%(reset)s | "
                       "\033[32mD%(asctime)s\033[0m | "
-                      "\033[34m%(method)s\033[0m \033[36m%(url)s\033[0m | "
-                      "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s - \033[34m%(ip)s\033[0m "
+                      "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s "
                       "%(message)s",
             "datefmt": "%d-%m-%Y T%H:%M:%S",
             "log_colors": {
@@ -59,8 +64,7 @@ logger_settings = {
             "()": "colorlog.ColoredFormatter",
             "format": "%(levelname)-8s | "
                       "D%(asctime)s | "
-                      "%(method)s %(url)s | "
-                      "%(location)s: def %(func)s(): line - %(line)d - %(ip)s "
+                      "%(location)s: def %(func)s(): line - %(line)d "
                       "%(message)s",
             "datefmt": "%d-%m-%Y T%H:%M:%S",
             "log_colors": {
@@ -133,25 +137,18 @@ logging.config.dictConfig(logger_settings)
 logger = logging.getLogger('prod_log')
 
 
-def log_event(event: str, *args, request: Request = None, level: Literal['DEBUG','INFO','WARNING','ERROR','CRITICAL'] = 'INFO'):
+def log_event(event: str, *args, level: Literal['DEBUG','INFO','WARNING','ERROR','CRITICAL'] = 'INFO'):
     cur_call = inspect.currentframe()
     outer = inspect.getouterframes(cur_call)[1]
     filename = os.path.relpath(outer.filename)
     func = outer.function
     line = outer.lineno
 
-    meth, url, ip = '', '', ''
-    if isinstance(request, Request):
-        meth, url = request.method, request.url
-        ip = request.state.client_ip if hasattr(request.state, 'client_ip') else get_client_ip(request)
 
     message = event % args if args else event
 
     logger.log(lvls[level], message, extra={
-        'method': meth,
         'location': filename,
         'func': func,
         'line': line,
-        'url': url,
-        'ip': ip
     })

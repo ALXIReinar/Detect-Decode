@@ -1,4 +1,4 @@
-from core.config_dir.config import env, WORKDIR
+from core.config_dir.config import env
 
 
 def create_log_dirs():
