@@ -57,9 +57,6 @@ class DetectorAugment(nn.Module):
 
 
 class OCRDetectorDataset(Dataset):
-    classes = ['word']
-    img_formats = {'.png', '.jpg'}
-
     def __init__(self, path: str | Path, transform: None | Literal['train', 'val'] = None, img_size: int = 640):
         """
         Args:
@@ -143,7 +140,6 @@ class OCRDetectorDataset(Dataset):
                     obj_ann = {
                         'bbox': bbox,
                         'label': self.class_to_idx['word'],
-                        'word': word.attrib.get('text', '')
                     }
 
                     objs_ann.append(obj_ann)
@@ -179,7 +175,6 @@ class OCRDetectorDataset(Dataset):
         W, H = sample['size_img']
         boxes = [obj_ann['bbox'] for obj_ann in sample['objs_ann']]
         labels = [obj_ann['label'] for obj_ann in sample['objs_ann']]
-        words = [obj_ann['word'] for obj_ann in sample['objs_ann']]
 
         boxes = tv_tensors.BoundingBoxes(
             boxes,
@@ -189,7 +184,6 @@ class OCRDetectorDataset(Dataset):
         target = {
             "boxes": boxes.to(torch.float32),
             "labels": torch.tensor(labels, dtype=torch.int64),
-            "words": words,
         }
 
         "Применяем трансформации"
@@ -197,30 +191,6 @@ class OCRDetectorDataset(Dataset):
             img, target = self.transform(img, target)
 
         return img, target
-
-    # @staticmethod
-    # def collate_fn(batch):
-    #     """
-    #     batch: список элементов вида (img, target)
-    #            target = {'boxes': [Ni, 4], 'labels': [Ni], 'words': [...]}
-    #
-    #     Возвращает:
-    #         imgs: [B, C, H, W]
-    #         targets: list of [Mi, 4] (xyxy)
-    #         words: list of слов для каждой картинки
-    #     """
-    #     imgs, targets, words = [], [], []
-    #
-    #     for img, target in batch:
-    #         imgs.append(img)
-    #         boxes = target["boxes"]
-    #         if boxes.numel() == 0:
-    #             boxes = torch.zeros((0, 4), dtype=torch.float32)
-    #         targets.append(boxes)
-    #         words.append(target["words"])
-    #
-    #     imgs = torch.stack(imgs, dim=0)  # [B, C, H, W]
-    #     return imgs, targets, words
 
     @staticmethod
     def collate_fn(batch):
@@ -231,12 +201,10 @@ class OCRDetectorDataset(Dataset):
         images = []
         all_boxes = []
         all_batch_idx = []
-        words = []
-        
+
         for i, (img, target) in enumerate(batch):  # ← ИСПРАВЛЕНО: только 2 значения
             images.append(img)
-            words.append(target['words'])
-            
+
             boxes = target['boxes']
             if boxes.numel() > 0:
                 num_boxes = boxes.shape[0]
@@ -277,4 +245,4 @@ class OCRDetectorDataset(Dataset):
         else:
             targets = torch.zeros((0, 6), dtype=torch.float32)
         
-        return images, targets, words
+        return images, targets

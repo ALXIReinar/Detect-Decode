@@ -2,7 +2,7 @@ import torch
 from ultralytics import YOLO
 from ultralytics.nn.modules import Detect
 
-from ml.dataset_class.dataclass_detector import OCRDetectorDataset
+from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 
 
 yolov8n = YOLO('yolov8n.yaml')

@@ -5,17 +5,17 @@ from ultralytics.utils.nms import non_max_suppression
 
 from ml.config import WORKDIR, env
 from ml.logger_config import log_event
-from ml.models import model_detector, model_detector_code
+from ml.detector.models import model_detector, model_detector_code
 
 from ultralytics.utils.loss import v8DetectionLoss
 from types import SimpleNamespace
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR
 from datetime import datetime
-from ml.dataset_class.dataclass_detector import OCRDetectorDataset
+from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from torch.utils.data import DataLoader
 
-from ml.utils.train_run_plots import plot_loss_dynamics, plot_metrics_dynamics, plot_lr_chronology
+from ml.detector.utils.train_run_plots import plot_loss_dynamics, plot_metrics_dynamics, plot_lr_chronology
 
 
 # ======================================================================================================================
@@ -101,7 +101,7 @@ def train_run():
         
         opt.zero_grad()  # Один раз в начале эпохи
         
-        for i, (img, targets, words) in enumerate(train_loop):
+        for i, (img, targets) in enumerate(train_loop):
             "Предсказание модели на батч"
             img = img.to(env.device, non_blocking=True)
             targets = targets.to(env.device, non_blocking=True)
@@ -149,7 +149,7 @@ def train_run():
             stats = []
 
             val_loop = tqdm(val_loader, leave=False, desc=f'Validation \033[36m#{epoch}\033[0m')
-            for img, targets, words in val_loop:
+            for img, targets in val_loop:
 
                 img = img.to(env.device, non_blocking=True)
                 targets = targets.to(env.device, non_blocking=True)
