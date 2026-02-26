@@ -171,3 +171,4 @@ visualizations/
 quick_check.py
 test_resolution.py
 *.png
+TRAINING_README.md
