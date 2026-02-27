@@ -3,7 +3,7 @@ from torchvision.models import resnet34, ResNet34_Weights
 
 
 class CRNNWordEncoder(nn.Module):
-    def __init__(self, num_classes=45, hidden_size=256, num_lstm_layers=2, dropout=0.3, pretrained_backbone=False):
+    def __init__(self, num_classes=45, hidden_size=256, num_lstm_layers=2, rnn_dropout=0.3, lstm_dropout=0.3, pretrained_backbone=False):
         """
         CRNN модель для распознавания рукописного текста
         
@@ -11,7 +11,9 @@ class CRNNWordEncoder(nn.Module):
             num_classes: количество классов (45 для упрощённого алфавита)
             hidden_size: размер скрытого состояния RNN/LSTM
             num_lstm_layers: количество слоёв BiLSTM (рекомендуется 2-3)
-            dropout: регуляризация модели. 0.0-1.0. Устанавливает вероятность отключения нейронов в слое при обработке тензора
+            rnn_dropout: dropout для rnn слоя
+            lstm_dropout: регуляризация модели. 0.0-1.0. Устанавливает вероятность отключения нейронов в слое при обработке тензора
+            pretrained_backbone: При True подгружает веса для ResNet34
         """
         super().__init__()
         
@@ -27,10 +29,11 @@ class CRNNWordEncoder(nn.Module):
         self.layer2 = resnet.layer2  # 128 channels
         
         self.rnn = nn.RNN(input_size=128, hidden_size=hidden_size, num_layers=1, batch_first=True, bidirectional=False)
-        
+        self.rnn_dropout = nn.Dropout(p=rnn_dropout)
+
         self.bilstm = nn.LSTM(
             input_size=hidden_size, hidden_size=hidden_size, num_layers=num_lstm_layers, batch_first=True, bidirectional=True,
-            dropout=dropout if num_lstm_layers > 1 else 0
+            dropout=lstm_dropout if num_lstm_layers > 1 else 0
         )
         
         # *2 потому что bidirectional LSTM выдаёт конкатенацию forward и backward
@@ -50,6 +53,8 @@ class CRNNWordEncoder(nn.Module):
         x = x.permute(0, 2, 1)  # [batch, W, 128]
 
         x, _ = self.rnn(x)  # [batch, W, hidden_size]
+
+        x = self.rnn_dropout(x)
 
         x, _ = self.bilstm(x)  # [batch, W, hidden_size*2]
 
@@ -65,7 +70,7 @@ from torchvision.models import resnet34, ResNet34_Weights
 
 
 class CRNNWordEncoder(nn.Module):
-    def __init__(self, num_classes=45, hidden_size=256, num_lstm_layers=2, dropout=0.3):
+    def __init__(self, num_classes=45, hidden_size=256, num_lstm_layers=2, rnn_dropout=0.3, lstm_dropout=0.3, pretrained_backbone=False):
         """
         CRNN модель для распознавания рукописного текста
         
@@ -73,11 +78,11 @@ class CRNNWordEncoder(nn.Module):
             num_classes: количество классов (45 для упрощённого алфавита)
             hidden_size: размер скрытого состояния RNN/LSTM
             num_lstm_layers: количество слоёв BiLSTM (рекомендуется 2-3)
-            dropout: регуляризация модели. 0.0-1.0. Устанавливает вероятность отключения нейронов в слое при обработке тензора
+            lstm_dropout: регуляризация модели. 0.0-1.0. Устанавливает вероятность отключения нейронов в слое при обработке тензора
         """
         super().__init__()
         
-        resnet = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1)
+        resnet = resnet34(weights=ResNet34_Weights.IMAGENET1K_V1 if pretrained_backbone else None)
         
         "Бэкбон от ResNet34"
         self.inp_conv = resnet.conv1
@@ -89,10 +94,11 @@ class CRNNWordEncoder(nn.Module):
         self.layer2 = resnet.layer2  # 128 channels
         
         self.rnn = nn.RNN(input_size=128, hidden_size=hidden_size, num_layers=1, batch_first=True, bidirectional=False)
-        
+        self.rnn_dropout = nn.Dropout(p=rnn_dropout)
+
         self.bilstm = nn.LSTM(
             input_size=hidden_size, hidden_size=hidden_size, num_layers=num_lstm_layers, batch_first=True, bidirectional=True,
-            dropout=dropout if num_lstm_layers > 1 else 0
+            dropout=lstm_dropout if num_lstm_layers > 1 else 0
         )
         
         # *2 потому что bidirectional LSTM выдаёт конкатенацию forward и backward
@@ -113,6 +119,8 @@ class CRNNWordEncoder(nn.Module):
 
         x, _ = self.rnn(x)  # [batch, W, hidden_size]
 
+        x = self.rnn_dropout(x)
+
         x, _ = self.bilstm(x)  # [batch, W, hidden_size*2]
 
         # У нас [batch, W, hidden_size*2], Linear применится к каждому из W элементов
@@ -120,4 +128,5 @@ class CRNNWordEncoder(nn.Module):
 
         x = x.permute(1, 0, 2)  # [W, batch, num_classes]
         return x
+
 '''

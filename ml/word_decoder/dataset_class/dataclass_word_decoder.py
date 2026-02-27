@@ -57,17 +57,17 @@ class CRNNWordAugment(nn.Module):
                 v2.RandomRotation(degrees=5, fill=1.0),
                 v2.RandomAffine(
                     degrees=0,
-                    translate=(0.05, 0.05),
-                    scale=(0.9, 1.1),
-                    shear=5,
+                    translate=(0.1, 0.1),
+                    scale=(0.85, 1.15),
+                    shear=7,
                     fill=1.0
                 ),
                 
                 # Размытие (имитация плохого качества сканирования)
-                v2.RandomApply([v2.GaussianBlur(kernel_size=3)], p=0.3),
+                v2.RandomApply([v2.GaussianBlur(kernel_size=3)], p=0.5),
                 
                 # Изменение яркости и контраста
-                v2.ColorJitter(brightness=0.3, contrast=0.3),
+                v2.ColorJitter(brightness=0.4, contrast=0.4),
                 
                 # Случайная инверсия (белый текст на чёрном фоне)
                 v2.RandomInvert(p=0.1),

@@ -1,6 +1,4 @@
 """
-Метрики для оценки качества OCR модели.
-
 CER (Character Error Rate) - процент ошибок на уровне символов
 WER (Word Error Rate) - процент ошибок на уровне слов
 """
@@ -152,6 +150,23 @@ def calculate_accuracy(predictions: list[str], targets: list[str]) -> float:
     accuracy = (correct / len(predictions)) * 100
     
     return accuracy
+
+def postprocess_russian(text):
+    """
+    Постобработка для русского текста
+    Добавляет заглавные буквы и запятые
+    """
+    "Заглавные после точки"
+    sentences = text.split('. ')
+    sentences = [s.capitalize() for s in sentences]
+    text = '. '.join(sentences)
+
+    "Запятые перед союзами"
+    conjunctions = ['что', 'чтобы', 'если', 'когда', 'потому', 'хотя']
+    for word in conjunctions:
+        text = text.replace(f' {word}', f', {word}')
+
+    return text
 
 
 # Пример использования

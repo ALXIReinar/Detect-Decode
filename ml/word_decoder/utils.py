@@ -1,23 +1,6 @@
+import argparse
+
 from ml.base_utils import plot_curves
-
-
-def postprocess_russian(text):
-    """
-    Постобработка для русского текста
-    Добавляет заглавные буквы и запятые
-    """
-    "Заглавные после точки"
-    sentences = text.split('. ')
-    sentences = [s.capitalize() for s in sentences]
-    text = '. '.join(sentences)
-
-    "Запятые перед союзами"
-    conjunctions = ['что', 'чтобы', 'если', 'когда', 'потому', 'хотя']
-    for word in conjunctions:
-        text = text.replace(f' {word}', f', {word}')
-
-    return text
-
 
 
 def plot_lr_chronology(history_arg, save_path=None, show=False):
@@ -92,3 +75,35 @@ def plot_metrics_dynamics(history_arg, save_path=None, show=False):
         show=show,
     )
 
+
+def parse_args():
+    """Парсинг аргументов командной строки."""
+    parser = argparse.ArgumentParser(
+        description='Тестирование модели детектора OCR',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        '--weights', '-w',
+        type=str,
+        required=True,
+        help='Путь к файлу весов модели (.pth)'
+    )
+    parser.add_argument(
+        '--batch-size', '-b',
+        type=int,
+        default=4,
+        help='Размер батча для тестирования'
+    )
+    parser.add_argument(
+        '--img-height', '-i',
+        type=int,
+        default=64,
+        help='Высота входного изображения (32, 64)'
+    )
+    parser.add_argument(
+        '--workers', '-j',
+        type=int,
+        default=2,
+        help='Количество workers для DataLoader'
+    )
+    return parser.parse_args()
