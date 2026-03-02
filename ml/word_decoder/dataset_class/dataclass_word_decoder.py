@@ -15,16 +15,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
 import torch
 from PIL import Image
 from torch import nn
+import albumentations as A
 
 from torch.utils.data import Dataset
 from torchvision.transforms import v2
 
 from ml.config import WORKDIR
 from ml.logger_config import log_event
-
+from ml.word_decoder.utils import AddGaussianNoise
 
 
 @lru_cache
@@ -47,32 +49,24 @@ class CRNNWordAugment(nn.Module):
         
         self.base_transform = v2.Compose([
             v2.ToImage(),
-            v2.ToDtype(dtype=torch.uint8, scale=True),
+            v2.ToDtype(dtype=torch.uint8),
         ])
-        self.augmentations = v2.ToDtype(dtype=torch.float32, scale=True)
+        # self.augmentations = v2.ToDtype(dtype=torch.float32, scale=True)
 
         "Аугментации для обучения"
         if mode == 'train':
-            self.augmentations = v2.Compose([
-                v2.RandomRotation(degrees=5, fill=1.0),
-                v2.RandomAffine(
-                    degrees=0,
-                    translate=(0.1, 0.1),
-                    scale=(0.85, 1.15),
-                    shear=7,
-                    fill=1.0
-                ),
-                
-                # Размытие (имитация плохого качества сканирования)
-                v2.RandomApply([v2.GaussianBlur(kernel_size=3)], p=0.5),
-                
-                # Изменение яркости и контраста
-                v2.ColorJitter(brightness=0.4, contrast=0.4),
-                
-                # Случайная инверсия (белый текст на чёрном фоне)
-                v2.RandomInvert(p=0.1),
+            # Albumentations работают с numpy (H, W, C)
+            self.alb_aug = A.Compose([
+                A.ElasticTransform(alpha=1, sigma=50, p=0.3),
+                A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.3),
+                A.ShiftScaleRotate(
+                    shift_limit=0.06, scale_limit=0.1, rotate_limit=5, p=0.5, border_mode=0, fill=255),
+            ])
 
+            self.torch_aug = v2.Compose([
+                v2.ColorJitter(brightness=0.3, contrast=0.3),
                 v2.ToDtype(dtype=torch.float32, scale=True),
+                AddGaussianNoise(mean=0.0, std=0.02),
             ])
 
     
@@ -100,23 +94,57 @@ class CRNNWordAugment(nn.Module):
         return img
 
 
+    # def forward(self, img: Image.Image) -> torch.Tensor:
+    #     """
+    #     Применяет трансформации к изображению.
+    #
+    #     Args:
+    #         img: PIL изображение (grayscale)
+    #
+    #     Returns:
+    #         тензор [3, H, W] - 3 канала для ResNet
+    #     """
+    #     img = self.base_transform(img)
+    #     img = self.resize_keep_aspect_ratio(img)   # Resize с сохранением aspect ratio
+    #     img = self.augmentations(img)
+    #
+    #     if img.shape[0] == 1:
+    #         img = img.repeat(3, 1, 1)
+    #     return img
+
     def forward(self, img: Image.Image) -> torch.Tensor:
-        """
-        Применяет трансформации к изображению.
-        
-        Args:
-            img: PIL изображение (grayscale)
-            
-        Returns:
-            тензор [3, H, W] - 3 канала для ResNet
-        """
-        img = self.base_transform(img)
-        img = self.resize_keep_aspect_ratio(img)   # Resize с сохранением aspect ratio
-        img = self.augmentations(img)
-        
-        if img.shape[0] == 1:
-            img = img.repeat(3, 1, 1)
-        return img
+        """"""
+        "Сначала Resize + сохранение пропорций"
+
+
+        w, h = img.size
+        new_w = max(16, min(int(self.img_height * (w / h)), 512))
+        img = img.resize((new_w, self.img_height), Image.Resampling.BILINEAR)
+
+        "Аугментации Albumentations при train"
+        if self.mode == 'train':
+            img_np = np.array(img)
+            augmented = self.alb_aug(image=img_np)['image']
+            if len(augmented.shape) == 3 and augmented.shape[2] == 1:
+                augmented = augmented.squeeze(2)
+
+            img = Image.fromarray(augmented)
+
+        "np_img2tensor"
+        img_tensor = v2.ToImage()(img)
+        img_tensor = v2.ToDtype(dtype=torch.uint8)(img_tensor)
+
+        "Прочие аугментации"
+        if self.mode == 'train':
+            img_tensor = self.torch_aug(img_tensor)
+        else:
+            img_tensor = v2.ToDtype(dtype=torch.float32, scale=True)(img_tensor)
+
+        "Дублируем каналы для ResNet"
+        if img_tensor.shape[0] == 1:
+            img_tensor = img_tensor.repeat(3, 1, 1)
+
+        return img_tensor
 
 
 class CRNNWordDataset(Dataset):
@@ -217,7 +245,7 @@ class CRNNWordDataset(Dataset):
         return len(self.data)
 
 
-    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, int]:
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor, int, int]:
         """
         Возвращает один семпл.
         
@@ -261,17 +289,17 @@ class CRNNWordDataset(Dataset):
         text_length = len(text_indices)
         
         text_indices = torch.tensor(text_indices, dtype=torch.long)
-        return img, text_indices, text_length
+        return img, text_indices, text_length, img.shape[2]
     
     @staticmethod
     def collate_fn(batch: list) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Collate функция для DataLoader.
         Паддит изображения до одной ширины и конкатенирует тексты.
-        
+
         Args:
             batch: список из (img, text_indices, text_length)
-            
+
         Returns:
             (images, targets, input_lengths, target_lengths)
             - images: [batch, 3, H, max_width] - паддированные изображения (3 канала)
@@ -282,11 +310,12 @@ class CRNNWordDataset(Dataset):
         images = []
         all_text_indices = []
         target_lengths = []
+        orig_lengths = []
         
         # Находим максимальную ширину в батче
-        max_width = max(img.shape[2] for img, _, _ in batch)
+        max_width = max(img.shape[2] for img, _, _, _ in batch)
         
-        for img, text_indices, text_length in batch:
+        for img, text_indices, text_length, orig_length in batch:
             # Паддим изображение справа до max_width
             c, h, w = img.shape  # [3, H, W]
             if w < max_width:
@@ -298,20 +327,21 @@ class CRNNWordDataset(Dataset):
             images.append(img)
             all_text_indices.append(text_indices)
             target_lengths.append(text_length)
+            orig_lengths.append(orig_length)
         
-        # Стекаем изображения
+        # Стекаем изображения + Normalize
         images = torch.stack(images, dim=0)  # [batch, C, H, max_width]
-        
+        norm = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))  # ImageNet Normalize
+        images = norm(images)
+
         # Конкатенируем все text_indices
         targets = torch.cat(all_text_indices, dim=0)  # [sum(target_lengths)]
         
         # Длины целевых текстов
         target_lengths = torch.tensor(target_lengths, dtype=torch.long)  # [batch]
         
-        # Длины входных последовательностей (будут вычислены после forward pass модели)
-        # Пока ставим заглушку, реальные значения будут после модели
-        # Обычно это width // 8 (из-за downsampling в ResNet)
-        input_lengths = torch.full((len(batch),), max_width // 8, dtype=torch.long)
+        # Так как паддим изображение, нужно сохранить оригинальную ширину слова // 4, так как даунсемпл от ResNet backbone
+        input_lengths = torch.tensor(orig_lengths, dtype=torch.long) // 4
         
         return images, targets, input_lengths, target_lengths
 

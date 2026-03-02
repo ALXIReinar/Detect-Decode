@@ -86,16 +86,15 @@ def ctc_greedy_decode(predictions: torch.Tensor, blank_idx: int = 0) -> list[lis
     Returns:
         список списков индексов (декодированные последовательности)
     """
-    # Если формат [seq_len, batch, num_classes], транспонируем
-    if predictions.dim() == 3 and predictions.shape[0] < predictions.shape[1]:
-        predictions = predictions.permute(1, 0, 2)  # [batch, seq_len, num_classes]
-    
-    # Берём argmax
-    _, preds = predictions.max(2)  # [batch, seq_len]
-    
+    # predictions: [seq_len, batch, num_classes]
+    # 1. Сначала берем argmax по классам
+    _, preds = predictions.max(2)  # [seq_len, batch]
+
+    # 2. Транспонируем, чтобы итерироваться по батчу
+    preds = preds.transpose(0, 1)  # [batch, seq_len]
+
     decoded = []
     for pred in preds:
-        # Убираем повторяющиеся символы и blank
         pred_list = []
         prev_char = None
         for char_idx in pred.tolist():
@@ -103,7 +102,6 @@ def ctc_greedy_decode(predictions: torch.Tensor, blank_idx: int = 0) -> list[lis
                 pred_list.append(char_idx)
             prev_char = char_idx
         decoded.append(pred_list)
-    
     return decoded
 
 

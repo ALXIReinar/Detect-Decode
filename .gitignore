@@ -170,5 +170,6 @@ ml_docs/
 visualizations/
 quick_check.py
 test_resolution.py
+download_russian_datasets.py
 *.png
 TRAINING_README.md

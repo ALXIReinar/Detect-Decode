@@ -1,5 +1,8 @@
 import argparse
 
+import torch
+from torch import nn
+
 from ml.base_utils import plot_curves
 
 
@@ -51,7 +54,7 @@ def plot_loss_dynamics(history_arg, save_path=None, show=False):
 
 
 def plot_metrics_dynamics(history_arg, save_path=None, show=False):
-    """График метрик при валидации: val map@50 и map@50:95"""
+    """График метрик при валидации: val CER, WER, ACC"""
     values_list = history_arg["general_metrics"]
 
     curves = [
@@ -64,13 +67,18 @@ def plot_metrics_dynamics(history_arg, save_path=None, show=False):
             "label": "WER",
             "values": values_list["wer_list"],
             "color": "#3498DB"  # Синий
+        },
+        {
+            "label": "ACC",
+            "values": values_list["acc_list"],
+            "color": "#FFA500"  # Оранжевый
         }
     ]
 
     plot_curves(
         curves=curves,
         title="Metrics Validation Dynamics",
-        ylabel="CER & WER",
+        ylabel="CER & WER & ACC",
         save_path=save_path,
         show=show,
     )
@@ -107,3 +115,13 @@ def parse_args():
         help='Количество workers для DataLoader'
     )
     return parser.parse_args()
+
+
+class AddGaussianNoise(nn.Module):
+    def __init__(self, mean=0., std=0.05):
+        super().__init__()
+        self.std = std
+        self.mean = mean
+
+    def forward(self, tensor):
+        return tensor + torch.randn(tensor.size(), device=tensor.device) * self.std + self.mean

@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch.nn import CTCLoss
 from tqdm import tqdm
@@ -13,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.models import CRNNWordEncoder, model_word_encoder_code
-from ml.word_decoder.metrics import calculate_cer, calculate_wer, decode_predictions
+from ml.word_decoder.metrics import calculate_cer, calculate_wer, decode_predictions, calculate_accuracy
 from ml.word_decoder.utils import plot_lr_chronology, plot_loss_dynamics, plot_metrics_dynamics
 
 
@@ -67,23 +69,37 @@ def train_run():
 # Гиперпараметры
 # ======================================================================================================================
 
-    epochs = 60
+    epochs = 50
 
-    hidden_size = 384
+    hidden_size = 256
     lstm_layers = 3
-    rnn_dropout = 0.5
-    lstm_dropout = 0.5
-    pretrained_backbone = False
+    lstm_dropout = 0.57
+    pretrained_backbone = True
     num_classes = len(train_dset.charset)
 
-    model = CRNNWordEncoder(num_classes, hidden_size, lstm_layers, rnn_dropout, lstm_dropout, pretrained_backbone).to(env.device)
+    model = CRNNWordEncoder(num_classes, hidden_size, lstm_layers, lstm_dropout, pretrained_backbone).to(env.device)
 
-
-    loss_func = CTCLoss(blank=0, zero_infinity=True, reduction='mean')
+    "Unfreeze backbone стратегия"
+    unfreeze_backbone = True
+    unfreeze_epoch_layer2 = 30
+    unfreeze_epoch_layer1 = 40
+    unfreeze_epoch_whole_backbone = 44
     
-    # Label Smoothing для борьбы с переобучением
-    label_smoothing = 0.1  # 10% smoothing
-    opt = AdamW(model.parameters(), lr=3e-4, weight_decay=1e-3)
+    "Скейл градиентов для размороженных весов"
+    backbone_lr_multiplier = 0.1  # Backbone будет учиться в 10 раз медленнее
+
+    "Оптимизатор с разными lr для модели"
+    if pretrained_backbone and unfreeze_backbone:
+        # Разделяем параметры
+        backbone_params = list(model.backbone.parameters())
+        other_params = list(model.bilstm.parameters()) + list(model.fc.parameters())
+
+        opt = AdamW([
+            {'params': other_params, 'lr': 5e-4},
+            {'params': backbone_params, 'lr': 5e-4 * backbone_lr_multiplier}
+        ], weight_decay=1e-3)
+    else:
+        opt = AdamW(model.parameters(), lr=5e-4, weight_decay=5e-4)
 
     steps_per_epoch = len(train_loader)
     lr_sched = OneCycleLR(
@@ -104,7 +120,14 @@ def train_run():
     #     min_lr=1e-6
     # )
 
-    early_stopping_mode = False
+    "Loss Function"
+    loss_func = CTCLoss(blank=0, zero_infinity=True, reduction='mean')
+    
+    # Label Smoothing для борьбы с переобучением
+    label_smoothing = 0.1  # 10% smoothing
+    
+
+    early_stopping_mode = True
     threshold_loss = 0.01
     threshold_metric = 0.02
     early_stopping = 15
@@ -117,11 +140,20 @@ def train_run():
 
     log_event(f'\033[34mОбучение началось\033[0m | Эпохи: \033[33m{epochs}\033[0m')
 
-    train_loss_list, val_loss_list, lr_list, cer_list, wer_list, min_loss, min_metric_value = [], [], [], [], [], None, None
+    train_loss_list, val_loss_list, lr_list, cer_list, wer_list, acc_list, min_loss, min_metric_value = [], [], [], [], [], [], None, None
     plateau_loss_epochs = 0
 
 
     for epoch in range(1, epochs + 1):
+        
+        "Постепенная разморозка весов"
+        if pretrained_backbone and unfreeze_backbone:
+            if epoch == unfreeze_epoch_layer2:
+                model.unfreeze_backbone_gradual(stage=1)
+            elif epoch == unfreeze_epoch_layer1:
+                model.unfreeze_backbone_gradual(stage=2)
+            elif epoch == unfreeze_epoch_whole_backbone:
+                model.unfreeze_backbone_gradual(stage=3)
 
         model.train()
 
@@ -130,20 +162,19 @@ def train_run():
         
         opt.zero_grad()  # Один раз в начале эпохи
         
-        for i, (images, targets, _, target_lengths) in enumerate(train_loop):
+        for i, (images, targets, images_widths, target_lengths) in enumerate(train_loop):
             images = images.to(env.device, non_blocking=True)
             targets = targets.to(env.device, non_blocking=True)
+            input_lengths = images_widths.to(env.device, non_blocking=True)
             target_lengths = target_lengths.to(env.device, non_blocking=True)
-            
+
             "Forward"
             log_probs = model(images)  # [seq_len, batch, num_classes]
             log_probs = torch.nn.functional.log_softmax(log_probs, dim=2)
-            
-            # Вычисляем input_lengths (длина последовательности после модели)
-            # Для нашей модели: seq_len из выхода модели
-            batch_size = images.shape[0]
-            input_lengths = torch.full((batch_size,), log_probs.shape[0], dtype=torch.long, device=env.device)
-            
+
+            # ни один input_length не стал меньше target_length?
+            input_lengths = torch.max(input_lengths, target_lengths)
+
             "Loss"
             loss = loss_func(log_probs, targets, input_lengths, target_lengths)
             
@@ -186,7 +217,7 @@ def train_run():
         avg_train_loss = sum(list_train_loss) / len(list_train_loss)
         train_loss_list.append(avg_train_loss)
         
-        log_event(f"\033[32mTRAINING\033[0m | Epoch {epoch} | train_loss=\033[33m{avg_train_loss:.4f}\033[0m")
+        log_event(f"\033[32mTRAINING\033[0m | Epoch \033[37m{epoch}\033[0m | train_loss=\033[33m{avg_train_loss:.4f}\033[0m")
 
     # ==================================================================================================================
     # Валидация
@@ -199,19 +230,17 @@ def train_run():
 
             list_val_loss = []
             val_loop = tqdm(val_loader, leave=False, desc=f'Validation \033[36m#{epoch}\033[0m')
-            for images, targets, _, target_lengths in val_loop:
-
+            for images, targets, images_widths, target_lengths in val_loop:
                 images = images.to(env.device, non_blocking=True)
                 targets_gpu = targets.to(env.device, non_blocking=True)
+                images_widths = images_widths.to(env.device, non_blocking=True)
                 target_lengths_gpu = target_lengths.to(env.device, non_blocking=True)
 
                 "Forward"
                 log_probs = model(images)  # [seq_len, batch, num_classes]
                 log_probs_softmax = torch.nn.functional.log_softmax(log_probs, dim=2)
 
-                # Вычисляем input_lengths
-                batch_size = images.shape[0]
-                input_lengths = torch.full((batch_size,), log_probs.shape[0], dtype=torch.long, device=env.device)
+                input_lengths = torch.clamp(images_widths, min=target_lengths.max().item())
 
                 "Loss"
                 loss = loss_func(log_probs_softmax, targets_gpu, input_lengths, target_lengths_gpu)
@@ -220,6 +249,10 @@ def train_run():
 
                 "Декодируем предсказания для метрик"
                 predictions = decode_predictions(log_probs, val_dset, blank_idx=0)
+                # Проверка
+                if len(predictions) != images.shape[0]:
+                    print(f"Ошибка! Предсказаний: {len(predictions)}, картинок в батче: {images.shape[0]}")
+
                 all_predictions.extend(predictions)
 
                 "Декодируем целевые тексты"
@@ -240,10 +273,13 @@ def train_run():
         "Метрики"
         cer = calculate_cer(all_predictions, all_targets)
         wer = calculate_wer(all_predictions, all_targets)
+        acc = calculate_accuracy(all_predictions, all_targets)
+
         avg_metric_value = (cer + wer) / 2.0
         
         cer_list.append(cer)
         wer_list.append(wer)
+        acc_list.append(acc)
 
         "ReduceOnPlateau"
         # lr_sched.step(avg_val_loss)
@@ -253,7 +289,7 @@ def train_run():
         lr = opt.param_groups[0]['lr']
         lr_list.append(lr)
 
-        log_event(f"\033[34mVALIDATION\033[0m Epoch {epoch} | val_loss=\033[35m{avg_val_loss:.4f}\033[0m | CER=\033[32m{cer:.2f}%\033[0m | WER=\033[36m{wer:.2f}%\033[0m | LR=\033[33m{lr:.6f}\033[0m")
+        log_event(f"\033[34mVALIDATION\033[0m Epoch \033[37m{epoch}\033[0m | val_loss=\033[35m{avg_val_loss:.4f}\033[0m | CER=\033[32m{cer:.2f}%\033[0m | WER=\033[36m{wer:.2f}%\033[0m | ACC=\033[35m{acc:.2f}%\033[0m | LR=\033[33m{lr:.6f}\033[0m")
 
         history = {
             "general_metrics": {
@@ -261,11 +297,13 @@ def train_run():
                 'train_loss_list': train_loss_list,
                 'cer_list': cer_list,
                 'wer_list': wer_list,
+                'acc_list': acc_list
             },
             "train_loss_last": avg_train_loss,
             "val_loss_last": avg_val_loss,
             "cer_cur": cer,
             "wer_cur": wer,
+            "acc_cur": acc,
             "lr": lr_list
         }
 
@@ -284,7 +322,6 @@ def train_run():
                     'num_classes': num_classes,
                     'hidden_size': hidden_size,
                     'num_lstm_layers': lstm_layers,
-                    'rnn_dropout': rnn_dropout,
                     'lstm_dropout': lstm_dropout
                 },
                 'state_model': model.state_dict(),
@@ -292,19 +329,40 @@ def train_run():
                 'state_lr_scheduler': lr_sched.state_dict(),
                 'save_epoch': epoch,
                 'history': history,
-                'charset': train_dset.charset
+                'charset': train_dset.charset,
+                'pretrained_backbone': pretrained_backbone,
             }
-            torch.save(checkpoint, models_dir.joinpath(f'model_epoch{epoch}.pth'))
+            "Попытка сохранить веса"
+            save_path = models_dir.joinpath(f'model_epoch{epoch}.pth')
+            try:
+                tmp_file = models_dir.joinpath(f'model_epoch{epoch}.tmp')
+                torch.save(checkpoint, save_path)
+                if os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 0:
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                    os.rename(tmp_file, save_path)
+                    log_event(f"Успешно сохранено: {save_path} ({os.path.getsize(save_path) / 1e6:.2f} MB)")
+                else:
+                    log_event(f"ОШИБКА: Файл {tmp_file} пуст!", level='ERROR')
+            except Exception as e:
+                log_event(f"Критическая ошибка при сохранении: {e}", level='CRITICAL')
+
             plateau_loss_epochs = 0
-            log_event(f'На эпохе - \033[35m{epoch}\033[0m модель сохранена | val_loss=\033[34m{avg_val_loss:.4f}\033[0m, CER=\033[32m{cer:.2f}\033[0m%, WER=\033[34m{wer:.2f}\033[0m%', level='WARNING')
+            log_event(f'На эпохе - \033[35m{epoch}\033[0m модель сохранена | val_loss=\033[34m{avg_val_loss:.4f}\033[0m, CER=\033[32m{cer:.2f}%\033[0m, WER=\033[34m{wer:.2f}%\033[0m, ACC=\033[35m{acc:.2f}%\033[0m', level='WARNING')
 
         "Early Stopping"
         if early_stopping_mode and plateau_loss_epochs >= early_stopping:
             log_event(f'\033[31m{'!!!' * 10} Принудительная остановка обучения, нет прогресса {'!!!' * 10}\033[0m', level='WARNING')
+
+            "Сохраняем динамику обучения"
+            plot_loss_dynamics(history, models_dir / 'loss_distribution.png')
+            plot_metrics_dynamics(history, models_dir / 'metrics.png')
+            plot_lr_chronology(history, models_dir / 'chronology.png')
             raise Exception("Early Stopping")
 
         plateau_loss_epochs += 1
 
+    "Сохраняем динамику обучения"
     plot_loss_dynamics(history, models_dir / 'loss_distribution.png')
     plot_metrics_dynamics(history, models_dir / 'metrics.png')
     plot_lr_chronology(history, models_dir / 'chronology.png')
