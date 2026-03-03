@@ -46,12 +46,6 @@ class CRNNWordAugment(nn.Module):
         super().__init__()
         self.mode = mode
         self.img_height = img_height
-        
-        self.base_transform = v2.Compose([
-            v2.ToImage(),
-            v2.ToDtype(dtype=torch.uint8),
-        ])
-        # self.augmentations = v2.ToDtype(dtype=torch.float32, scale=True)
 
         "Аугментации для обучения"
         if mode == 'train':
@@ -69,48 +63,6 @@ class CRNNWordAugment(nn.Module):
                 AddGaussianNoise(mean=0.0, std=0.02),
             ])
 
-    
-    def resize_keep_aspect_ratio(self, img: torch.Tensor) -> torch.Tensor:
-        """
-        Изменяет размер изображения с сохранением aspect ratio.
-        Высота фиксирована, ширина пропорциональна.
-        
-        Args:
-            img: изображение [C, H, W]
-            
-        Returns:
-            изображение [C, img_height, new_width]
-        """
-        _, h, w = img.shape
-        
-        # Вычисляем новую ширину с сохранением aspect ratio
-        aspect_ratio = w / h
-        new_width = int(self.img_height * aspect_ratio)
-        
-        # Ограничиваем минимальную и максимальную ширину в пикселях
-        new_width = max(16, min(new_width, 512))
-        
-        img = v2.Resize((self.img_height, new_width), antialias=True)(img)
-        return img
-
-
-    # def forward(self, img: Image.Image) -> torch.Tensor:
-    #     """
-    #     Применяет трансформации к изображению.
-    #
-    #     Args:
-    #         img: PIL изображение (grayscale)
-    #
-    #     Returns:
-    #         тензор [3, H, W] - 3 канала для ResNet
-    #     """
-    #     img = self.base_transform(img)
-    #     img = self.resize_keep_aspect_ratio(img)   # Resize с сохранением aspect ratio
-    #     img = self.augmentations(img)
-    #
-    #     if img.shape[0] == 1:
-    #         img = img.repeat(3, 1, 1)
-    #     return img
 
     def forward(self, img: Image.Image) -> torch.Tensor:
         """"""

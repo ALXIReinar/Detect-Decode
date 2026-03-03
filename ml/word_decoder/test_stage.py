@@ -8,12 +8,12 @@ from tqdm import tqdm
 from ml.config import env, WORKDIR
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
-from ml.word_decoder.metrics import decode_predictions, calculate_cer, calculate_wer
+from ml.word_decoder.metrics import decode_predictions, calculate_cer, calculate_wer, calculate_accuracy
 from ml.word_decoder.models import CRNNWordEncoder
 from ml.word_decoder.utils import parse_args
 
 
-def test_run(weights_path: Path, batch_size: int = 4, img_height: int = 64, workers: int = 2):
+def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, workers: int = 2):
     """"""
 
     batch_size_test = batch_size
@@ -54,34 +54,33 @@ def test_run(weights_path: Path, batch_size: int = 4, img_height: int = 64, work
     log_event(f'✅ Веса загружены успешно', level='WARNING')
 
     "Некоторые гиперпараметры"
-    loss_func = nn.CTCLoss(blank=0, zero_infinity=True)
+    loss_func = nn.CTCLoss(blank=0, zero_infinity=True, reduction='mean')
 
     model.eval()
     with torch.no_grad():
-        last_val_loss = 0.0
+        list_test_loss = []
     
         all_predictions = []
         all_targets = []
     
         test_loop = tqdm(test_loader, leave=False, desc=f'Testing')
-        for images, targets, _, target_lengths in test_loop:
+        for images, targets, images_widths, target_lengths in test_loop:
     
             images = images.to(env.device, non_blocking=True)
             targets_gpu = targets.to(env.device, non_blocking=True)
+            images_widths = images_widths.to(env.device, non_blocking=True)
             target_lengths_gpu = target_lengths.to(env.device, non_blocking=True)
     
             "Forward"
             log_probs = model(images)  # [seq_len, batch, num_classes]
             log_probs_softmax = torch.nn.functional.log_softmax(log_probs, dim=2)
     
-            # Вычисляем input_lengths
-            batch_size = images.shape[0]
-            input_lengths = torch.full((batch_size,), log_probs.shape[0], dtype=torch.long, device=env.device)
-    
+            input_lengths = torch.clamp(images_widths, min=target_lengths.max().item())
+
             "Loss"
             loss = loss_func(log_probs_softmax, targets_gpu, input_lengths, target_lengths_gpu)
     
-            last_val_loss = loss.item()
+            list_test_loss.append(loss.item())
     
             "Декодируем предсказания для метрик"
             predictions = decode_predictions(log_probs, test_dset, blank_idx=0)
@@ -103,7 +102,10 @@ def test_run(weights_path: Path, batch_size: int = 4, img_height: int = 64, work
     "Метрики"
     cer = calculate_cer(all_predictions, all_targets)
     wer = calculate_wer(all_predictions, all_targets)
-    log_event(f"\033[35mTESTING\033[0m | val_loss=\033[31m{last_val_loss:.4f}\033[0m | CER=\033[33m{cer:.2f}%\033[0m | WER=\033[36m{wer:.2f}%\033[0m", level='WARNING')
+    acc = calculate_accuracy(all_predictions, all_targets)
+    avg_test_loss = sum(list_test_loss) / len(list_test_loss)
+
+    log_event(f"\033[35mTESTING\033[0m | test_loss=\033[35m{avg_test_loss:.4f}\033[0m | CER=\033[32m{cer:.2f}%\033[0m | WER=\033[36m{wer:.2f}%\033[0m | ACC=\033[35m{acc:.2f}%\033[0m", level='WARNING')
 
 
 

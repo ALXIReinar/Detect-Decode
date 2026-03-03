@@ -124,7 +124,7 @@ def train_run():
     loss_func = CTCLoss(blank=0, zero_infinity=True, reduction='mean')
     
     # Label Smoothing для борьбы с переобучением
-    label_smoothing = 0.1  # 10% smoothing
+    label_smoothing = 0.0  # 10% smoothing
     
 
     early_stopping_mode = True
