@@ -57,7 +57,9 @@ class DetectorAugment(nn.Module):
 
 
 class OCRDetectorDataset(Dataset):
-    def __init__(self, path: str | Path, transform: None | Literal['train', 'val'] = None, img_size: int = 640):
+    def __init__(
+            self, path: str | Path, transform: None | Literal['train', 'val'] = None, img_size: int = 1280, auto_load: bool = True
+    ):
         """
         Args:
             path: путь к датасету
@@ -73,7 +75,11 @@ class OCRDetectorDataset(Dataset):
         self.idx_to_class = {idx: class_name for idx, class_name in enumerate(self.classes)}
 
         self.transform = DetectorAugment(transform, img_size=img_size) if transform else None
-        self.data: list[dict] = self.create_data()
+        self.data: list[dict] = []
+
+        "Автозагрузка данных"
+        if auto_load:
+            self.create_data()
 
     def create_data(self):
         target_data = []
@@ -159,7 +165,7 @@ class OCRDetectorDataset(Dataset):
         assert target_data_len != 0, 'В указанной директории ничего нет!'
 
         self.data = target_data
-        return target_data
+        return self
 
     def __len__(self):
         return len(self.data)

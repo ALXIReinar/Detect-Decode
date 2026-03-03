@@ -99,7 +99,7 @@ def parse_args():
     parser.add_argument(
         '--batch-size', '-b',
         type=int,
-        default=4,
+        default=64,
         help='Размер батча для тестирования'
     )
     parser.add_argument(

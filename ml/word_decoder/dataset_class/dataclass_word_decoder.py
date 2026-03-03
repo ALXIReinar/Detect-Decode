@@ -36,6 +36,18 @@ def read_charset_file_lru(f_path: Path):
     raise FileNotFoundError(f'File {f_path} not found.')
 
 
+def read_charset(charset_input: str | list[str] | Path) -> list[str]:
+    """
+    Читает charset из файла или возвращает переданный список.
+    """
+    # Если передан список - возвращаем как есть
+    if isinstance(charset_input, list):
+        return charset_input
+    
+    # Если передан путь - читаем файл с кэшированием
+    return read_charset_file_lru(Path(charset_input))
+
+
 class CRNNWordAugment(nn.Module):
     def __init__(self, mode: Literal['train', 'val', 'test'], img_height: int = 64):
         """
@@ -107,9 +119,10 @@ class CRNNWordDataset(Dataset):
     def __init__(
         self,
         path: str | Path,
-        charset_path: str | Path,
+        charset_path: str | Path | list[str],
         img_height: int = 64,
-        transform: Literal['train', 'val', 'test'] | None = None
+        transform: Literal['train', 'val', 'test'] | None = None,
+        auto_load: bool = True
     ):
         """
         Args:
@@ -117,9 +130,10 @@ class CRNNWordDataset(Dataset):
             charset_path: путь к файлу набора символов
             img_height: фиксированная высота изображения
             transform: режим трансформаций ('train', 'val', 'test' или None)
+            auto_load: автоматически загружать данные при инициализации (по умолчанию True)
         """
         self.path = Path(path)
-        self.charset: list[str] = read_charset_file_lru(Path(charset_path))
+        self.charset: list[str] = read_charset(charset_path)
         self.img_height = img_height
         
         self.char_to_idx = {char: idx for idx, char in enumerate(self.charset)}
@@ -127,11 +141,20 @@ class CRNNWordDataset(Dataset):
         
         self.transform = CRNNWordAugment(transform, img_height) if transform else None
         
-        self.data = self.load_data()
+        self.data = []
         
-        log_event(f"Загружено \033[31m{len(self.data)}\033[0m семплов из \033[34m{self.path}\033[0m")
+        "Автоматическая загрузка данных"
+        if auto_load:
+            self.load_data()
+
     
-    def load_data(self) -> list[dict]:
+    def load_data(self):
+        """
+        Загружает данные из директории.
+        
+        Returns:
+            self: возвращает сам объект для chain calling
+        """
         data = []
         
         imgs_dir = self.path / 'imgs'
@@ -165,8 +188,11 @@ class CRNNWordDataset(Dataset):
         
         if not data:
             raise ValueError(f"Не найдено валидных семплов в {self.path}")
+
+        log_event(f"Загружено \033[31m{len(data)}\033[0m семплов из \033[34m{self.path}\033[0m")
+        self.data = data
         
-        return data
+        return self
     
     def text_to_indices(self, text: str) -> list[int]:
         """
@@ -307,11 +333,12 @@ if __name__ == "__main__":
         img_height=64,
         transform='train'
     )
+    train_dataset.load_data()
 
     print(f"\nДатасет: {len(train_dataset)} семплов")
 
     # Тестируем один семпл
-    img, text_indices, text_length = train_dataset[0]
+    img, text_indices, text_length, orig_lengths = train_dataset[0]
     print(f"\nПример семпла:")
     print(f"  Изображение: {img.shape} (должно быть [3, 64, W])")
     print(f"  Каналы: {img.shape[0]} (должно быть 3 для ResNet)")
@@ -338,27 +365,9 @@ if __name__ == "__main__":
     print(f"  Target lengths: {target_lengths}")
 
     # Тестируем один семпл
-    img, text_indices, text_length = train_dataset[0]
+    img, text_indices, text_length, input_lengths = train_dataset[0]
     print(f"\nПример семпла:")
     print(f"  Изображение: {img.shape}")
     print(f"  Текст (индексы): {text_indices}")
     print(f"  Текст (строка): '{train_dataset.indices_to_text(text_indices.tolist())}'")
     print(f"  Длина текста: {text_length}")
-
-    # Тестируем DataLoader
-    from torch.utils.data import DataLoader
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=8,
-        shuffle=True,
-        collate_fn=CRNNWordDataset.collate_fn,
-        num_workers=0
-    )
-
-    print(f"\nТест DataLoader:")
-    images, targets, input_lengths, target_lengths = next(iter(train_loader))
-    print(f"  Images: {images.shape}")
-    print(f"  Targets: {targets.shape}")
-    print(f"  Input lengths: {input_lengths}")
-    print(f"  Target lengths: {target_lengths}")

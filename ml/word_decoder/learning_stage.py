@@ -14,7 +14,7 @@ from datetime import datetime
 from torch.utils.data import DataLoader
 
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
-from ml.word_decoder.models import CRNNWordEncoder, model_word_encoder_code
+from ml.word_decoder.models import CRNNWordDecoder, model_word_decoder_code
 from ml.word_decoder.metrics import calculate_cer, calculate_wer, decode_predictions, calculate_accuracy
 from ml.word_decoder.utils import plot_lr_chronology, plot_loss_dynamics, plot_metrics_dynamics
 
@@ -77,7 +77,7 @@ def train_run():
     pretrained_backbone = True
     num_classes = len(train_dset.charset)
 
-    model = CRNNWordEncoder(num_classes, hidden_size, lstm_layers, lstm_dropout, pretrained_backbone).to(env.device)
+    model = CRNNWordDecoder(num_classes, hidden_size, lstm_layers, lstm_dropout, pretrained_backbone).to(env.device)
 
     "Unfreeze backbone стратегия"
     unfreeze_backbone = True
@@ -317,7 +317,7 @@ def train_run():
             min_metric_value = avg_metric_value
 
             checkpoint = {
-                'model_code': model_word_encoder_code,
+                'model_code': model_word_decoder_code,
                 'model_params': {
                     'num_classes': num_classes,
                     'hidden_size': hidden_size,
@@ -331,6 +331,7 @@ def train_run():
                 'history': history,
                 'charset': train_dset.charset,
                 'pretrained_backbone': pretrained_backbone,
+                'img_height': img_height,
             }
             "Попытка сохранить веса"
             save_path = models_dir.joinpath(f'model_epoch{epoch}.pth')

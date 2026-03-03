@@ -11,7 +11,7 @@ from ultralytics.utils.nms import non_max_suppression
 from ml.config import WORKDIR, env
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from ml.logger_config import log_event
-from ml.detector.models import model_detector
+from ml.detector.models import WordDetector
 from ml.detector.utils.args_parser_test_stage import parse_args
 
 
@@ -52,7 +52,8 @@ def test_run(weights_path: Path | str, batch_size: int = 4, img_size: int = 1280
         raise FileNotFoundError(f"Файл весов не найден: {weights_path}")
     
     log_event(f'Загрузка весов из: \033[36m{weights_path}\033[0m', level='WARNING')
-    
+
+    model_detector = WordDetector()
     model_detector.to(env.device)
     model_weights = torch.load(weights_path, weights_only=False, map_location=env.device)['state_model']
     model_detector.load_state_dict(model_weights)

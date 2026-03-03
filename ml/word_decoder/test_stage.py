@@ -9,7 +9,7 @@ from ml.config import env, WORKDIR
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions, calculate_cer, calculate_wer, calculate_accuracy
-from ml.word_decoder.models import CRNNWordEncoder
+from ml.word_decoder.models import CRNNWordDecoder
 from ml.word_decoder.utils import parse_args
 
 
@@ -44,7 +44,7 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
     model_inner_params = model_params['model_params']
     hidden_size, num_lstm_layers = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers']
 
-    model = CRNNWordEncoder(len(test_dset.charset), hidden_size=hidden_size, num_lstm_layers=num_lstm_layers)
+    model = CRNNWordDecoder(len(test_dset.charset), hidden_size=hidden_size, num_lstm_layers=num_lstm_layers)
     model.to(env.device)
 
     "Загружаем веса"

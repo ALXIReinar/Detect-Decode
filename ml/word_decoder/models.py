@@ -1,11 +1,10 @@
-import torch
 from torch import nn
 from torchvision.models import resnet34, ResNet34_Weights
 
 from ml.logger_config import log_event
 
 
-class CRNNWordEncoder(nn.Module):
+class CRNNWordDecoder(nn.Module):
     def __init__(self, num_classes=45, hidden_size=256, num_lstm_layers=2, lstm_dropout=0.3, pretrained_backbone=False):
         """
         CRNN модель для распознавания рукописного текста
@@ -88,14 +87,14 @@ class CRNNWordEncoder(nn.Module):
         return x.permute(1, 0, 2)  # [W, batch, num_classes] для CTCLoss
 
 
-model_word_encoder_code = '''
+model_word_decoder_code = '''
 from torch import nn
 from torchvision.models import resnet34, ResNet34_Weights
 
 from ml.logger_config import log_event
 
 
-class CRNNWordEncoder(nn.Module):
+class CRNNWordDecoder(nn.Module):
     def __init__(self, num_classes=45, hidden_size=256, num_lstm_layers=2, lstm_dropout=0.3, pretrained_backbone=False):
         """
         CRNN модель для распознавания рукописного текста
@@ -118,7 +117,6 @@ class CRNNWordEncoder(nn.Module):
             resnet.conv1,
             resnet.bn1,
             resnet.relu,
-            resnet.maxpool,
             resnet.layer1,  # 64 channels
             resnet.layer2   # 128 channels
         )
@@ -132,12 +130,11 @@ class CRNNWordEncoder(nn.Module):
         self.inp_conv = self.backbone[0]
         self.inp_bn = self.backbone[1]
         self.inp_relu = self.backbone[2]
-        self.inp_maxpool = self.backbone[3]
-        self.layer1 = self.backbone[4]
-        self.layer2 = self.backbone[5]
+        self.layer1 = self.backbone[3]
+        self.layer2 = self.backbone[4]
         
         self.bilstm = nn.LSTM(
-            input_size=128, hidden_size=hidden_size, num_layers=num_lstm_layers, batch_first=True, bidirectional=True,
+            input_size=2048, hidden_size=hidden_size, num_layers=num_lstm_layers, batch_first=True, bidirectional=True,
             dropout=lstm_dropout if num_lstm_layers > 1 else 0
         )
         
@@ -166,15 +163,17 @@ class CRNNWordEncoder(nn.Module):
 
 
     def forward(self, x):
-        x = self.backbone(x)  # [batch, 128, H', W']
+        x = self.backbone(x)  # [batch, 128, 16, W]
 
         b, c, h, w = x.shape
-        x = x.view(b, c * h, w)  # [batch, 128, W]
-        x = x.permute(0, 2, 1)  # [batch, W, 128]
-        x, _ = self.bilstm(x)  # [batch, W, hidden_size*2]
 
-        # У нас [batch, W, hidden_size*2], Linear применится к каждому из W элементов
+        # Сначала переставляем W на второе место, чтобы схлопывать именно C и H для каждого шага W
+        x = x.permute(0, 3, 1, 2).contiguous()  # [batch, W, 128, 16]
+        x = x.view(b, w, c * h)  # [batch, W, 2048]
+
+        x, _ = self.bilstm(x)  # [batch, W, hidden_size*2]
         x = self.fc(x)  # [batch, W, num_classes]
-        x = x.permute(1, 0, 2)  # [W, batch, num_classes]
-        return x
+
+        return x.permute(1, 0, 2)  # [W, batch, num_classes] для CTCLoss
+
 '''

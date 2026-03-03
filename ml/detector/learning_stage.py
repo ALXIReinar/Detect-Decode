@@ -5,7 +5,7 @@ from ultralytics.utils.nms import non_max_suppression
 
 from ml.config import WORKDIR, env
 from ml.logger_config import log_event
-from ml.detector.models import model_detector, model_detector_code
+from ml.detector.models import WordDetector, model_detector_code
 
 from ultralytics.utils.loss import v8DetectionLoss
 from types import SimpleNamespace
@@ -64,7 +64,7 @@ def train_run():
 # Гиперпараметры
 # ======================================================================================================================
 
-
+    model_detector = WordDetector()
     model_detector.to(env.device)
     loss_func = v8DetectionLoss(model_detector)
     hyp = SimpleNamespace(box=7.5, cls=0.5, dfl=1.5) # изменить cls на 1.0?
@@ -280,11 +280,12 @@ def train_run():
             min_loss = last_losses_val[-1]
 
             checkpoint = {
-                'model_detector': model_detector_code,
+                'model_code': model_detector_code,
                 'state_model': model_detector.state_dict(),
                 'state_opt': opt.state_dict(),
                 'state_lr_scheduler': lr_sched.state_dict(),
                 'save_epoch': epoch,
+                'img_size': img_size,
                 'history': history,
             }
             torch.save(checkpoint, models_dir.joinpath(f'model_detector{epoch}.pth'))
@@ -294,6 +295,9 @@ def train_run():
         "Early Stopping"
         if early_stopping_mode and plateau_loss_epochs >= early_stopping:
             log_event(f'\033[31m{'!!!' * 10} Принудительная остановка обучения, нет прогресса {'!!!' * 10}\033[0m', level='WARNING')
+            plot_loss_dynamics(history, models_dir / 'loss_distribution.png')
+            plot_metrics_dynamics(history, models_dir / 'metrics.png')
+            plot_lr_chronology(history, models_dir / 'chronology.png')
             raise Exception("Early Stopping")
 
         plateau_loss_epochs += 1
