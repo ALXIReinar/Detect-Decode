@@ -10,18 +10,10 @@ from logging.config import dictConfig
 from typing import Literal, Any
 
 from starlette.requests import Request
-from starlette.websockets import WebSocket
 
-from ml.config import WORKDIR, env
+from ml.config import env, LOG_DIR
 
 
-"Создаём директорию для логов"
-LOG_DIR = Path(WORKDIR) / 'logs'
-LOG_DIR.mkdir(exist_ok=True, parents=True)
-
-"Директория для хранения картинок/архивов для S3"
-S3_DIR = Path(WORKDIR) / 'ml' / 's3_samples'
-S3_DIR.mkdir(exist_ok=True, parents=True)
 
 def get_client_ip(request: Request):
     xff = request.headers.get('X-Forwarded-For')
@@ -45,7 +37,6 @@ class JSONFormatter(logging.Formatter):
             "func": record.__dict__.get('func', 'unknown_function'),
             "location": record.__dict__.get('location', 'unknown_location'),
             "line": record.__dict__.get('line', 0),
-            "ip": str(record.__dict__.get('ip', '')),
         }
 
         extra_fields = [
@@ -62,7 +53,7 @@ class JSONFormatter(logging.Formatter):
                 "@timestamp": datetime.now(UTC).isoformat() + "Z",
                 "level": record.levelname,
                 "message": str(record.getMessage()),
-                "service": "fastapi-app",
+                "service": "ml-server",
                 "error": f"JSON serialization failed: {str(e)}"
             }
             return json.dumps(fallback_entry, ensure_ascii=False)
@@ -85,7 +76,7 @@ logger_settings = {
             "format": "%(log_color)s%(levelname)-8s%(reset)s | "
                       "\033[32mD%(asctime)s\033[0m | "
                       "\033[34m%(method)s\033[0m \033[36m%(url)s\033[0m | "
-                      "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s - \033[34m%(ip)s\033[0m "
+                      "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s "
                       "%(message)s",
             "datefmt": "%d-%m-%Y T%H:%M:%S",
             "log_colors": {
@@ -131,7 +122,7 @@ dictConfig(logger_settings)
 logger = logging.getLogger('prod_log')
 
 
-def log_event(event: Any, *args, request: Request | WebSocket = None,
+def log_event(event: Any, *args, request: Request = None,
               level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = 'INFO', **extra):
     event = str(event)
     cur_call = inspect.currentframe()
@@ -140,12 +131,9 @@ def log_event(event: Any, *args, request: Request | WebSocket = None,
     func = outer.function
     line = outer.lineno
 
-    meth, url, ip = '', '', ''
+    meth, url = '', ''
     if isinstance(request, Request):
         meth, url = request.method, str(request.url.path)
-        ip = request.state.client_ip if hasattr(request.state, 'client_ip') else get_client_ip(request)
-    elif isinstance(request, WebSocket):
-        url, ip = str(request.url.path), get_client_ip(request)
 
     message = event % args if args else event
 
@@ -155,6 +143,5 @@ def log_event(event: Any, *args, request: Request | WebSocket = None,
         'func': func,
         'line': line,
         'url': url,
-        'ip': ip,
         **extra
     })

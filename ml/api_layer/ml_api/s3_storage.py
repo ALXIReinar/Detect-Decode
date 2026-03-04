@@ -53,6 +53,7 @@ class S3StorageAsync:
         log_event('Выдан юрл на s3-объект: %s', file_key)
         return presigned_url
 
+
     async def ping_object(self, file_key: str, bucket_name: str):
         try:
             await self.session.head_object(Key=file_key, Bucket=bucket_name)

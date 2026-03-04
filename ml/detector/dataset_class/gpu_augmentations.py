@@ -3,7 +3,6 @@ GPU-based аугментации для ускорения обучения де
 Применяются на батче после collate_fn, прямо перед передачей в модель.
 """
 
-import torch
 from torchvision.transforms import v2
 
 
