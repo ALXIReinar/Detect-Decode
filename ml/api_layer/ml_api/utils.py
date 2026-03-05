@@ -131,5 +131,5 @@ async def process_batch_images(
         
         results.append((img_id, img_path, img_pil))
     
-    log_event(f"Подготовили batch из \033[33{len(results)}\033[0m images", level='INFO')
+    log_event(f"Подготовили batch из \033[33m{len(results)}\033[0m images", level='INFO')
     return results

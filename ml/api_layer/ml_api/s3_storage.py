@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from botocore.exceptions import ClientError
@@ -65,6 +66,13 @@ class S3StorageAsync:
             else:
                 log_event(f'Произошло нечто иное | file_key: {file_key} | Exception: {e.response}', level='CRITICAL')
         return False
+
+
+@asynccontextmanager
+async def get_consumer_cloud_session():
+    """Контекстный менеджер для получения S3 клиента в consumer"""
+    async with async_cloud_session() as s3_client:
+        yield S3StorageAsync(s3_client, env.s3_bucket_name)
 
 
 async def set_async_cloud_session():

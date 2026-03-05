@@ -1,4 +1,4 @@
-from ml.api_layer.ml_api.s3_storage import set_async_cloud_session
+from ml.api_layer.ml_api.s3_storage import get_consumer_cloud_session
 from ml.api_layer.ml_api.schemas import S3SendSchema
 from ml.api_layer.ml_api.utils import create_archive, move_archive_as_succeeded
 from ml.config import broker, env
@@ -37,7 +37,7 @@ async def s3_consumer(body: S3SendSchema):
             return
         
         "2. Подключение к S3 и загрузка архивов"
-        async with set_async_cloud_session() as s3:
+        async with get_consumer_cloud_session() as s3:
             for img_id, archive_path in archives:
                 try:
                     "Загружаем архив в S3"

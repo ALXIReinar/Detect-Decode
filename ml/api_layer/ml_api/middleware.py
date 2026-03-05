@@ -13,19 +13,35 @@ class ASGIAuthServiceMiddleware:
     def __init__(self, app: ASGIApp):
         self.app = app
 
-    async def __call__(self, scope: Scope, send: Send, receive: Receive):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
         """"""
         "Пропускаем запросы из миддлвари с иными протоколами"
         if scope['type'] not in {'http', }:
             await self.app(scope, receive, send)
             return
 
+        # Получаем client host из scope
+        # scope["client"] = (host, port) или None
+        client = scope.get("client")
+        client_host = client[0] if client else ''
+        
+       
+        if client_host in env.trusted_proxies:
+            await self.app(scope, receive, send)
+            return
+
         "Отклоняем, если нет заголовка от другого сервиса"
-        request = Request(scope, receive)
-        auth_header = request.headers.get("X-Auth-Service")
-        if not auth_header or not secrets.compare_digest(auth_header, env.auth_service_secret):
-            resp = JSONResponse(status_code=401, content="Доступ запрещён")
-            await resp(scope, receive, send)
+        headers = dict(scope.get("headers", []))
+        auth_header = headers.get(b"x-auth-service")
+        
+        if not auth_header or not secrets.compare_digest(
+            auth_header.decode(), env.auth_service_secret
+        ):
+            response = JSONResponse(
+                status_code=401,
+                content={"detail": "Доступ запрещён"}
+            )
+            await response(scope, receive, send)
             return
 
         "Обрабатываем запрос дальше"

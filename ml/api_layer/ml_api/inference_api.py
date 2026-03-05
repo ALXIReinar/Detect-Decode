@@ -74,7 +74,7 @@ async def imgs2text(
         img_ids=q_params.img_ids,
         preds_results=[r['text'] for r in results]
     )
-    await broker.publish(s3_bg_event, topic='s3-transfer-queue', compression_type='gzip')
+    await broker.publish(s3_bg_event, topic='s3-transfer-queue')
     log_event(f"Отправили в фон {len(results)} \033[33m{q_params.img_ids}\033[0m to Kafka", request=request)
 
     "4. Возвращаем результаты"
