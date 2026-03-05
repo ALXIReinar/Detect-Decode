@@ -2,7 +2,7 @@
 Функции для графиков по лоссам и метрикам
 """
 
-from ml.utils.base_utils import plot_curves
+from ml.base_utils import plot_curves
 
 
 def plot_loss_dynamics(history_arg, save_path=None, show=False):
@@ -116,7 +116,6 @@ def plot_metrics_dynamics(history_arg, save_path=None, show=False):
         save_path=save_path,
         show=show,
     )
-
 
 def plot_lr_chronology(history_arg, save_path=None, show=False):
     """

@@ -1,37 +1,63 @@
 import os
 import inspect
+import json
+from pathlib import Path
+from datetime import datetime, UTC
 
 import logging
 from logging.config import dictConfig
-from typing import Literal
 
-from ml.config import env
+from typing import Literal, Any
 
+from starlette.requests import Request
 
-"Init Log dirs"
-def create_log_dirs():
-    env.LOG_DIR.mkdir(exist_ok=True)
-
-    debug, info_warn, err = env.LOG_DIR / 'debug', env.LOG_DIR / 'info_warning', env.LOG_DIR / 'error'
-
-    debug.mkdir(exist_ok=True, parents=True)
-    info_warn.mkdir(exist_ok=True, parents=True)
-    err.mkdir(exist_ok=True, parents=True)
-create_log_dirs()
+from ml.config import env, LOG_DIR
 
 
 
-class InfoWarningFilter(logging.Filter):
-    def logger_filter(self, log):
-        return log.levelno in (logging.INFO, logging.WARNING, logging.ERROR)
+def get_client_ip(request: Request):
+    xff = request.headers.get('X-Forwarded-For')
+    ip = xff.split(',')[0].strip() if (
+            xff and request.client.host in env.trusted_proxies
+    ) else request.client.host
+    return ip
 
-class ErrorFilter(logging.Filter):
-    def logger_filter(self, log):
-        return log.levelno == logging.CRITICAL
 
-class DebugFilter(logging.Filter):
-    def logger_filter(self, log):
-        return log.levelno == logging.DEBUG
+
+class JSONFormatter(logging.Formatter):
+    def format(self, record):
+        log_entry = {
+            "@timestamp": datetime.now(UTC).isoformat() + "Z",
+            "level": record.levelname,
+            "message": record.getMessage(),
+            "service": "ml-server",
+            "environment": env.app_mode,
+            "method": record.__dict__.get('method', ''),
+            "url": str(record.__dict__.get('url', '')),
+            "func": record.__dict__.get('func', 'unknown_function'),
+            "location": record.__dict__.get('location', 'unknown_location'),
+            "line": record.__dict__.get('line', 0),
+        }
+
+        extra_fields = [
+            'http_status', 'response_time', 'cpu_percent', 'memory_percent',
+            'memory_used_mb', 'memory_total_mb', 'metric_type'
+        ]
+        for key in extra_fields:
+            log_entry[key] = record.__dict__.get(key, '')
+
+        try:
+            return json.dumps(log_entry, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            fallback_entry = {
+                "@timestamp": datetime.now(UTC).isoformat() + "Z",
+                "level": record.levelname,
+                "message": str(record.getMessage()),
+                "service": "ml-server",
+                "error": f"JSON serialization failed: {str(e)}"
+            }
+            return json.dumps(fallback_entry, ensure_ascii=False)
+
 
 lvls = {
     "DEBUG": 10,
@@ -49,6 +75,7 @@ logger_settings = {
             "()": "colorlog.ColoredFormatter",
             "format": "%(log_color)s%(levelname)-8s%(reset)s | "
                       "\033[32mD%(asctime)s\033[0m | "
+                      "\033[34m%(method)s\033[0m \033[36m%(url)s\033[0m | "
                       "%(cyan)s%(location)s:%(reset)s def %(cyan)s%(func)s%(reset)s(): line - %(cyan)s%(line)d%(reset)s "
                       "%(message)s",
             "datefmt": "%d-%m-%Y T%H:%M:%S",
@@ -60,95 +87,61 @@ logger_settings = {
                 "CRITICAL": "bold_red"
             }
         },
-        "no_color": {
-            "()": "colorlog.ColoredFormatter",
-            "format": "%(levelname)-8s | "
-                      "D%(asctime)s | "
-                      "%(location)s: def %(func)s(): line - %(line)d "
-                      "%(message)s",
-            "datefmt": "%d-%m-%Y T%H:%M:%S",
-            "log_colors": {
-                "DEBUG": "white",
-                "INFO": "green",
-                "WARNING": "yellow",
-                "ERROR": "red",
-                "CRITICAL": "bold_red"
-            }
+        "json": {
+            "()": JSONFormatter
         }
     },
-    "filters": {
-        "info_warning_error_filter": {
-            "()": InfoWarningFilter,
-        },
-        "error_filter": {
-            "()": ErrorFilter,
-        },
-        "debug_filter": {
-            "()": DebugFilter,
-        }
-    },
+    "filters": {},
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "default",
             "level": "DEBUG"
         },
-        "debug_file": {
+        "json_file": {
             "class": "logging.handlers.TimedRotatingFileHandler",
             "level": "DEBUG",
-            "formatter": "no_color",
-            "filename": env.LOG_DIR / "debug" / "app.log",
+            "formatter": "json",
+            "filename": LOG_DIR / "app.log",
             "when": "midnight",
-            "backupCount": 60,
+            "backupCount": 30,
             "encoding": "utf8",
-            "filters": ["debug_filter"]
-        },
-        "info_warning_errors_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
-            "level": "INFO",
-            "formatter": "no_color",
-            "filename": env.LOG_DIR / "info_warning" / "app.log",
-            "when": "midnight",
-            "backupCount": 60,
-            "encoding": "utf8",
-            "filters": ["info_warning_error_filter"]
-        },
-        "critical_file": {
-            "class": "logging.handlers.TimedRotatingFileHandler",
-            "level": "CRITICAL",
-            "formatter": "no_color",
-            "filename": env.LOG_DIR / "error" / "app.log",
-            "when": "midnight",
-            "backupCount": 180,
-            "encoding": "utf8",
-            "filters": ["error_filter"]
+            "filters": []
         }
     },
     "loggers": {
         "prod_log": {
-            "handlers": ["console", "info_warning_errors_file", "critical_file", "debug_file"],
+            "handlers": ["console", "json_file"],
             "level": "DEBUG",
             "propagate": False
         }
     }
 }
 
-logging.config.dictConfig(logger_settings)
+dictConfig(logger_settings)
 logger = logging.getLogger('prod_log')
 
 
-def log_event(event: str, *args, level: Literal['DEBUG','INFO','WARNING','ERROR','CRITICAL'] = 'INFO'):
+def log_event(event: Any, *args, request: Request = None,
+              level: Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] = 'INFO', **extra):
+    event = str(event)
     cur_call = inspect.currentframe()
     outer = inspect.getouterframes(cur_call)[1]
     filename = os.path.relpath(outer.filename)
     func = outer.function
     line = outer.lineno
 
+    meth, url = '', ''
+    if isinstance(request, Request):
+        meth, url = request.method, str(request.url.path)
 
     message = event % args if args else event
 
     logger.log(lvls[level], message, extra={
+        'method': meth,
         'location': filename,
         'func': func,
         'line': line,
+        'url': url,
+        **extra
     })

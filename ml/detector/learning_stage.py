@@ -5,17 +5,17 @@ from ultralytics.utils.nms import non_max_suppression
 
 from ml.config import WORKDIR, env
 from ml.logger_config import log_event
-from ml.models import model_detector, model_detector_code
+from ml.detector.models import WordDetector, model_detector_code
 
 from ultralytics.utils.loss import v8DetectionLoss
 from types import SimpleNamespace
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import MultiStepLR
 from datetime import datetime
-from ml.dataset_class.dataclass_detector import OCRDetectorDataset
+from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from torch.utils.data import DataLoader
 
-from ml.utils.train_run_plots import plot_loss_dynamics, plot_metrics_dynamics, plot_lr_chronology
+from ml.detector.utils.train_run_plots import plot_loss_dynamics, plot_metrics_dynamics, plot_lr_chronology
 
 
 # ======================================================================================================================
@@ -64,7 +64,7 @@ def train_run():
 # Гиперпараметры
 # ======================================================================================================================
 
-
+    model_detector = WordDetector()
     model_detector.to(env.device)
     loss_func = v8DetectionLoss(model_detector)
     hyp = SimpleNamespace(box=7.5, cls=0.5, dfl=1.5) # изменить cls на 1.0?
@@ -101,7 +101,7 @@ def train_run():
         
         opt.zero_grad()  # Один раз в начале эпохи
         
-        for i, (img, targets, words) in enumerate(train_loop):
+        for i, (img, targets) in enumerate(train_loop):
             "Предсказание модели на батч"
             img = img.to(env.device, non_blocking=True)
             targets = targets.to(env.device, non_blocking=True)
@@ -149,7 +149,7 @@ def train_run():
             stats = []
 
             val_loop = tqdm(val_loader, leave=False, desc=f'Validation \033[36m#{epoch}\033[0m')
-            for img, targets, words in val_loop:
+            for img, targets in val_loop:
 
                 img = img.to(env.device, non_blocking=True)
                 targets = targets.to(env.device, non_blocking=True)
@@ -280,11 +280,12 @@ def train_run():
             min_loss = last_losses_val[-1]
 
             checkpoint = {
-                'model_detector': model_detector_code,
+                'model_code': model_detector_code,
                 'state_model': model_detector.state_dict(),
                 'state_opt': opt.state_dict(),
                 'state_lr_scheduler': lr_sched.state_dict(),
                 'save_epoch': epoch,
+                'img_size': img_size,
                 'history': history,
             }
             torch.save(checkpoint, models_dir.joinpath(f'model_detector{epoch}.pth'))
@@ -294,6 +295,9 @@ def train_run():
         "Early Stopping"
         if early_stopping_mode and plateau_loss_epochs >= early_stopping:
             log_event(f'\033[31m{'!!!' * 10} Принудительная остановка обучения, нет прогресса {'!!!' * 10}\033[0m', level='WARNING')
+            plot_loss_dynamics(history, models_dir / 'loss_distribution.png')
+            plot_metrics_dynamics(history, models_dir / 'metrics.png')
+            plot_lr_chronology(history, models_dir / 'chronology.png')
             raise Exception("Early Stopping")
 
         plateau_loss_epochs += 1

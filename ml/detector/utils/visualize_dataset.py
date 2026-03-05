@@ -5,7 +5,7 @@
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from ml.dataset_class.dataclass_detector import OCRDetectorDataset
+from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from ml.config import WORKDIR
 
 
