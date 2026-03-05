@@ -1,10 +1,12 @@
 from pathlib import Path
 
+import numpy as np
 import torch
 from PIL import Image
-from torchvision.transforms import v2
+import torch.nn.functional as F
 from ultralytics.utils.nms import non_max_suppression
 
+from ml.api_layer.ml_api.utils import save_word_crop
 from ml.config import env
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from ml.detector.models import WordDetector
@@ -120,7 +122,6 @@ class OCRModel:
             conf_thres: порог уверенности для NMS (default: 0.25)
             iou_thres: порог IoU для NMS (default: 0.45)
             max_det: максимальное количество детекций (default: 600)
-                    Рекомендация: 600 достаточно для IAM Forms (max 128 слов/страница)
         """
         self.detector = DetectorModel(detector_weights_path)
         self.word_decoder = CRNNModel(word_decoder_weights_path)
@@ -130,62 +131,7 @@ class OCRModel:
         self.iou_thres = iou_thres
         self.max_det = max_det
 
-    def forward_pass(self, img: Image.Image, return_details: bool = False):
-        """
-        Полный OCR пайплайн.
-        
-        Args:
-            img: PIL Image (RGB или L) - ОРИГИНАЛЬНОЕ изображение
-            return_details: если True, возвращает детальную информацию (bboxes, confidences)
-            
-        Returns:
-            если return_details=False: str (распознанный текст)
-            если return_details=True: dict с полной информацией
-        """
-        # 1. Детекция слов (возвращает bboxes в координатах оригинального изображения)
-        bboxes, confidences, class_ids = self._detect_words(img)
-        
-        if len(bboxes) == 0:
-            return "" if not return_details else {
-                "text": "",
-                "words": [],
-                "bboxes": [],
-                "confidences": []
-            }
-        
-        # 2. Вырезаем слова из ОРИГИНАЛЬНОГО изображения и распознаём
-        words_data = []
-        for bbox, conf, cls_id in zip(bboxes, confidences, class_ids):
-            # Вырезаем слово из оригинального изображения
-            word_img = self._crop_word(img, bbox)
-            
-            # Распознаём
-            word_text = self._recognize_word(word_img)
-            
-            words_data.append({
-                "text": word_text,
-                "bbox": bbox,  # [x1, y1, x2, y2] в координатах оригинального изображения
-                "confidence": conf,
-                "class_id": cls_id
-            })
-        
-        # 3. Сортируем слова по позиции (сверху вниз, слева направо)
-        words_data = self._sort_words_by_position(words_data)
-        
-        # 4. Склеиваем текст
-        full_text = self._merge_words_to_text(words_data)
-        
-        if return_details:
-            return {
-                "text": full_text,
-                "words": [w["text"] for w in words_data],
-                "bboxes": [w["bbox"] for w in words_data],
-                "confidences": [w["confidence"] for w in words_data],
-                "words_data": words_data  # Полная информация
-            }
 
-        return full_text
-    
     def _detect_words(self, img: Image.Image):
         """
         Детекция слов на изображении.
@@ -198,8 +144,7 @@ class OCRModel:
             confidences: list of float
             class_ids: list of int
         """
-        import numpy as np
-        
+
         # Сохраняем оригинальный размер
         orig_width, orig_height = img.size
         
@@ -233,7 +178,7 @@ class OCRModel:
         # Bboxes в координатах ресайзнутого изображения (1280x1280)
         bboxes_resized = detections[:, :4]  # [N, 4] - [x1, y1, x2, y2]
         
-        # ВЕКТОРИЗАЦИЯ: Масштабируем все bboxes одновременно через NumPy broadcasting
+        # ВЕКТОРИЗАЦИЯ: Масштабируем все bboxes одновременно через NumPy
         scale = np.array([orig_width / resized_size, orig_height / resized_size, 
                          orig_width / resized_size, orig_height / resized_size])
         bboxes_original = (bboxes_resized * scale).tolist()
@@ -243,14 +188,21 @@ class OCRModel:
         
         return bboxes_original, confidences, class_ids
     
-    def _crop_word(self, img: Image.Image, bbox: list[float]) -> Image.Image:
+    def _crop_word(
+            self,
+            img: Image.Image,
+            bbox: list[float],
+            orig_img_id: int | None = None,
+            image_crop_idx: int | None = None
+    ) -> Image.Image:
         """
         Вырезает слово из изображения по bbox.
         
         Args:
             img: исходное изображение
             bbox: [x1, y1, x2, y2]
-            
+            orig_img_id: id исходного изображения
+            image_crop_idx: inner id для слова-картинки
         Returns:
             cropped image
         """
@@ -264,6 +216,9 @@ class OCRModel:
         
         # Вырезаем
         word_img = img.crop((x1, y1, x2, y2))
+        if orig_img_id is not None and image_crop_idx is not None:
+            save_word_crop(word_img, orig_img_id, image_crop_idx)
+
         
         return word_img
     
@@ -285,8 +240,7 @@ class OCRModel:
         img_tensor = self.word_decoder.dataset_obj.transform(word_img).unsqueeze(0)
         
         # Применяем ImageNet нормализацию (как в collate_fn)
-        normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-        img_tensor = normalize(img_tensor)
+        img_tensor = self.word_decoder.dataset_obj.imagenet_normalize(img_tensor)
         
         # Перемещаем на device
         img_tensor = img_tensor.to(env.device)
@@ -319,8 +273,6 @@ class OCRModel:
         Returns:
             отсортированный список
         """
-        import numpy as np
-        
         if len(words_data) == 0:
             return []
         
@@ -381,8 +333,6 @@ class OCRModel:
         Returns:
             полный текст
         """
-        import numpy as np
-        
         if len(words_data) == 0:
             return ""
         
@@ -426,8 +376,6 @@ class OCRModel:
         Returns:
             список распознанных текстов
         """
-        import torch.nn.functional as F
-        
         if len(word_imgs) == 0:
             return []
         
@@ -437,8 +385,8 @@ class OCRModel:
         for i in range(0, len(word_imgs), batch_size):
             batch = word_imgs[i:i + batch_size]
             
-            # ВЕКТОРИЗАЦИЯ: Конвертируем все изображения в grayscale одним списковым включением
-            batch_gray = [img.convert('L') if img.mode != 'L' else img for img in batch]
+            # Конвертируем все изображения в grayscale
+            batch_gray = [img.convert('L') for img in batch]
             
             # Трансформируем все изображения
             img_tensors = [self.word_decoder.dataset_obj.transform(img) for img in batch_gray]
@@ -464,8 +412,7 @@ class OCRModel:
             batch_tensor = torch.stack(padded_tensors)  # [batch, C, H, max_width]
             
             # Применяем ImageNet нормализацию
-            normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))
-            batch_tensor = normalize(batch_tensor)
+            batch_tensor = self.word_decoder.dataset_obj.imagenet_normalize(batch_tensor)
             
             # Перемещаем на device
             batch_tensor = batch_tensor.to(env.device)
@@ -491,8 +438,7 @@ class OCRModel:
         Returns:
             список кортежей (bboxes, confidences, class_ids) для каждого изображения
         """
-        import numpy as np
-        
+
         if len(imgs) == 0:
             return []
         
@@ -543,18 +489,21 @@ class OCRModel:
         
         return results
     
-    def forward_pass_batch(
+    def forward_pass(
         self, 
-        imgs: list[Image.Image], 
+        imgs: list[Image.Image],
+        img_ids: list[int],
         return_details: bool = False
     ) -> list[dict]:
         """
-        Батчинг OCR для нескольких изображений (ОПТИМИЗАЦИЯ).
+        Батчинг OCR для одного или нескольких изображений.
+        Чтобы подать одно изображение - обернуть в список
         
         Использует батчинг для детектора и word decoder для ускорения обработки.
         
         Args:
             imgs: список изображений
+            img_ids: список id изображений в БД
             return_details: возвращать детальную информацию
             
         Returns:
@@ -569,7 +518,7 @@ class OCRModel:
         results = []
         
         # 2. Обрабатываем каждое изображение
-        for img, (bboxes, confidences, class_ids) in zip(imgs, batch_detections):
+        for img_id, img, (bboxes, confidences, class_ids) in zip(img_ids, imgs, batch_detections):
             if len(bboxes) == 0:
                 # Нет слов на изображении
                 empty_result = {
@@ -581,8 +530,8 @@ class OCRModel:
                 results.append(empty_result)
                 continue
             
-            # Вырезаем все слова
-            word_imgs = [self._crop_word(img, bbox) for bbox in bboxes]
+            # Вырезаем все слова и сохраняем их в папку
+            word_imgs = [self._crop_word(img, bbox, img_id, idx) for idx, bbox in enumerate(bboxes)]
             
             # Распознаём батчем (батчинг word decoder)
             word_texts = self._recognize_words_batch(word_imgs)

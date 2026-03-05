@@ -6,11 +6,12 @@ from starlette.requests import Request
 
 from ml.api_layer.di_injections import OCRDep
 from ml.api_layer.ml_api.schemas import ImgMetadataSchema, S3SendSchema
-from ml.api_layer.ml_api.utils import process_batch_images, save_word_crop, save_result_text
+from ml.api_layer.ml_api.utils import process_batch_images, save_result_text
 from ml.config import broker
 from ml.logger_config import log_event
 
 router = APIRouter(prefix="/inference/ocr", tags=["🔮Inference"])
+
 
 
 @router.post('/en')
@@ -33,31 +34,19 @@ async def imgs2text(
     "Валидация"
     if len(imgs) != len(q_params.img_ids):
         raise HTTPException(status_code=400, detail=f"Number of images ({len(imgs)}) != number of img_ids ({len(q_params.img_ids)})")
-
     log_event(f"Начали обработку обращений | images: \033[33m{q_params.img_ids}\033[0m", request=request)
 
-    # 1. Сохраняем изображения и загружаем в память
     batch_data = await process_batch_images(imgs, q_params.img_ids)
 
-    # 2. Запускаем OCR inference с БАТЧИНГОМ (детектор + word decoder)
-    all_imgs = [img_pil for _, _, img_pil in batch_data]
+    "1,2. Сохранение img + Batched Inference"
+    all_img_ids, _, all_imgs = zip(*batch_data)
+    ocr_results = model.forward_pass(all_imgs, all_img_ids, return_details=True)
 
-    # Батчинг: обрабатываем все изображения сразу
-    ocr_results = model.forward_pass_batch(all_imgs, return_details=True)
-
-    # 3. Сохраняем вырезки слов и результаты
+    "Сохраняем вырезки слов и предсказания(текст)"
     results = []
-
     for (img_id, img_path, img_pil), ocr_result in zip(batch_data, ocr_results):
-        # Сохраняем вырезки слов
-        for word_idx, word_data in enumerate(ocr_result['words_data']):
-            # Вырезаем слово из оригинального изображения
-            word_img = model._crop_word(img_pil, word_data['bbox'])
 
-            # Сохраняем вырезку
-            save_word_crop(word_img, img_id, word_idx)
-
-        # Сохраняем результат в текстовый файл
+        "Сохраняем текст изображения"
         save_result_text(ocr_result['text'], img_id)
 
         results.append({
@@ -65,8 +54,7 @@ async def imgs2text(
             'text': ocr_result['text'],
             'word_count': len(ocr_result['words'])
         })
-
-        log_event(f"Processed img_id={img_id}: {len(ocr_result['words'])} words")
+        log_event(f"Инференс по img_id=\033[36m{img_id}\033[0m; words_total: \033[32m{len(ocr_result['words'])}\033[0m", request=request)
 
 
     "3. Отправляем задачи в ФОН Kafka"

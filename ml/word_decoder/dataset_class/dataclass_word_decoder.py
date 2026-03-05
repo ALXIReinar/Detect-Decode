@@ -140,7 +140,7 @@ class CRNNWordDataset(Dataset):
         self.idx_to_char = {idx: char for idx, char in enumerate(self.charset)}
         
         self.transform = CRNNWordAugment(transform, img_height) if transform else None
-        
+        self.imagenet_normalize = v2.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225))  # ImageNet Normalize
         self.data = []
         
         "Автоматическая загрузка данных"
