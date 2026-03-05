@@ -176,3 +176,4 @@ TRAINING_README.md
 ml/local_wheels/
 ml_logs/
 s3_samples/
+.env*
