@@ -28,7 +28,9 @@ LOG_DIR.mkdir(exist_ok=True, parents=True)
 
 
 class Settings(BaseSettings):
+    inference_feedback_emoji: list = ['🔝', '🎯', '💯', '🫶', '👍', '✌️', '👀', '🤦‍', '♂', '️🔥', '⚡️', '🌟', '🧩']
     redis_password: str
+    redis_max_connections: int
     redis_host: str
     redis_port: int
     redis_port_docker: int
@@ -63,7 +65,8 @@ def get_redis_settings(envs: Settings):
 
     redis_conf = {
         'host': getattr(envs, cfg['redis_host']),
-        'port': getattr(envs, cfg['redis_port'])
+        'port': getattr(envs, cfg['redis_port']),
+        'max_connections': env.redis_max_connections
     }
     if envs.app_mode != 'local':
         redis_conf['password'] = envs.redis_password
