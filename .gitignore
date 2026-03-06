@@ -175,6 +175,7 @@ download_russian_datasets.py
 TRAINING_README.md
 ml/local_wheels/
 ml_logs/
+bot_logs/
 s3_samples/
 .env*
 1.py

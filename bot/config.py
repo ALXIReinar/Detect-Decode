@@ -28,6 +28,12 @@ LOG_DIR.mkdir(exist_ok=True, parents=True)
 
 
 class Settings(BaseSettings):
+    redis_password: str
+    redis_host: str
+    redis_port: int
+    redis_port_docker: int
+    redis_host_docker: str
+
     bot_token: str
     api_server_url: str
     api_server_url_docker: str
@@ -50,3 +56,19 @@ api_base_url = getattr(env, APP_MODE_CONFIG[env.app_mode]['api_server_url'])
 
 "Bot"
 bot = Bot(token=env.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+
+"Redis"
+def get_redis_settings(envs: Settings):
+    cfg = APP_MODE_CONFIG[envs.app_mode]
+
+    redis_conf = {
+        'host': getattr(envs, cfg['redis_host']),
+        'port': getattr(envs, cfg['redis_port'])
+    }
+    if envs.app_mode != 'local':
+        redis_conf['password'] = envs.redis_password
+
+
+    return redis_conf
+
+redis_settings = get_redis_settings(env)
