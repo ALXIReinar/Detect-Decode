@@ -7,6 +7,7 @@ from bot.config import bot
 from bot.core.utils.aio_http2api_server import ApiServerConn
 from bot.core.utils.anything import RedisKeys, post_processing_text
 from bot.core.utils.keyboards import inference_feedback
+from bot.logger_config import log_event
 
 
 async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
@@ -18,10 +19,13 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
         lock_key = RedisKeys.media_lock(message.from_user.id)
         is_first = await redis.set(lock_key, "1", ex=86_400, nx=True)  # 1 day
         if not is_first:
+            log_event(f'Попытка отправить Фото во время инференса!!! | tg_id: \033[35m...{str(tg_id)[-5:]}\033[0m', level='WARNING')
             return
 
         await message.answer('Обработка...')
+
         text_from_images = await aio_http.imgs2inference(tg_id, [message.photo[-1].file_id])
+        log_event(f'Получили инференс от АпиСервера | res_len: \033[34m{len(text_from_images)}\033[0m', level='WARNING')
         img_pred = text_from_images[0]
         await bot.delete_message(message.chat.id, message.message_id + 1)
 
@@ -31,6 +35,7 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
             reply_markup=inference_feedback(img_pred['img_id'])
         )
         await redis.delete(lock_key)
+        log_event('Отдали ответ в бота, сняли лок | tg_id: \033[35m...{str(tg_id)[-5:]}\033[0m')
         return
     
     "Редис-ключи"
@@ -52,6 +57,7 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
         
         "Отправляем в АпиСервер"
         text_from_images = await aio_http.imgs2inference(tg_id, media_list)
+        log_event(f'Получили инференс от АпиСервера | res_len: \033[34m{len(text_from_images)}\033[0m', level='WARNING')
         await bot.delete_message(message.chat.id, message.message_id + len(media_list)) # Удаляем сообщение "Обработка..."
 
         "Постпроцессинг + Отправка"
@@ -64,3 +70,4 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
         
         "Очищаем данные"
         await redis.delete(media_group_key, lock_key)
+        log_event(f'Отдали ответ в бота, сняли лок | \033[35m{media_group_key}\033[0m')

@@ -1,0 +1,40 @@
+services:
+  redis:
+    image: redis:7.2-alpine
+    container_name: redis
+    command: redis-server --requirepass ${REDIS_PASSWORD} --appendonly yes
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    networks:
+      bot_net:
+
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bot
+    command: python -m bot.core.main
+    environment:
+      - ENV_FILE=/run/secrets/.env.bot.prod
+    volumes:
+      - ../bot_logs:/app/bot_logs
+    secrets:
+      - .env.bot.prod
+    networks:
+      bot_net:
+
+
+networks:
+  bot_net:
+    driver: bridge
+    name: ocr_bot_net
+
+volumes:
+  redis_data:
+    driver: local
+
+secrets:
+  .env.bot.prod:
+    file: .env.bot.prod
