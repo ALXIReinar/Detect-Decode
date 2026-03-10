@@ -43,7 +43,6 @@ class Settings(BaseSettings):
 
     app_mode: AppMode
     domain: str
-    auth_api_service_secret: str
 
     model_config = SettingsConfigDict(extra='allow')
 

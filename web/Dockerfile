@@ -14,7 +14,7 @@ RUN groupadd -r appuser && useradd -r -m -g  appuser appuser -d /home/appuser
 WORKDIR /app
 
 COPY --from=builder /root/.local /home/appuser/.local
-COPY --chown=appuser:appuser . /app/bot/
+COPY --chown=appuser:appuser . /app/web/
 
 RUN chown -R appuser:appuser /home/appuser /app
 
@@ -22,5 +22,3 @@ ENV PATH=/home/appuser/.local/bin:$PATH
 ENV PYTHONPATH=/app
 
 USER appuser
-
-#RUN ["python", "-m", "bot.core.main"]

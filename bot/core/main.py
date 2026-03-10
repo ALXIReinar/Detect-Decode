@@ -20,7 +20,6 @@ async def main():
     "AioHttp"
     aio_http_session = ClientSession(
         base_url=api_base_url,
-        headers={'X-Auth-Service': env.auth_api_service_secret}
     )
     
     "Redis"

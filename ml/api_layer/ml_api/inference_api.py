@@ -1,13 +1,13 @@
 from typing import Annotated
 
 from fastapi import APIRouter, UploadFile, HTTPException
-from fastapi.params import Query
+from fastapi.params import Query, File
 from starlette.requests import Request
 
 from ml.api_layer.di_injections import OCRDep
 from ml.api_layer.ml_api.schemas import ImgMetadataSchema, S3SendSchema
 from ml.api_layer.ml_api.utils import process_batch_images, save_result_text
-from ml.config import broker
+from ml.config import broker, env
 from ml.logger_config import log_event
 
 router = APIRouter(prefix="/inference/ocr", tags=["🔮Inference"])
@@ -16,10 +16,10 @@ router = APIRouter(prefix="/inference/ocr", tags=["🔮Inference"])
 
 @router.post('/en')
 async def imgs2text(
-        imgs: list[UploadFile],
-        q_params: Annotated[ImgMetadataSchema, Query(alias='img_ids_list')],
+        q_params: Annotated[ImgMetadataSchema, Query()],
         request: Request,
-        model: OCRDep
+        model: OCRDep,
+        imgs: list[UploadFile] = File(...),
 ):
     """
     OCR inference endpoint.
@@ -33,6 +33,7 @@ async def imgs2text(
     """
     "Валидация"
     if len(imgs) != len(q_params.img_ids):
+        log_event('Валидация не прошла!')
         raise HTTPException(status_code=400, detail=f"Number of images ({len(imgs)}) != number of img_ids ({len(q_params.img_ids)})")
     log_event(f"Начали обработку обращений | images: \033[33m{q_params.img_ids}\033[0m", request=request)
 
@@ -51,6 +52,7 @@ async def imgs2text(
 
         results.append({
             'img_id': img_id,
+            'cloud_archive_path': f'ocr/{img_id}.tar.gz', # предварительный путь к архиву в S3
             'text': ocr_result['text'],
             'word_count': len(ocr_result['words'])
         })

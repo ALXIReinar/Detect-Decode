@@ -41,7 +41,7 @@ async def s3_consumer(body: S3SendSchema):
             for img_id, archive_path in archives:
                 try:
                     "Загружаем архив в S3"
-                    archive_key = f'ocr/{img_id}.tar.gz'
+                    archive_key = f'ocr/{img_id}.tar.gz' # Должен быть таким же как в cloud_archive_path (inference_api)
                     with open(archive_path, 'rb') as f:
                         await s3.save_file(f, archive_key)
                     

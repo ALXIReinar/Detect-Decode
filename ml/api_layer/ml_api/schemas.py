@@ -5,6 +5,14 @@ from pydantic_core.core_schema import ValidationInfo
 class ImgMetadataSchema(BaseModel):
     img_ids: list[int]
 
+    # @field_validator('img_ids', mode='before')
+    # @classmethod
+    # def split_img_ids(cls, v):
+    #     if isinstance(v, str):
+    #         return [int(x.strip()) for x in v.split(',')]
+    #     return v
+
+
 class S3SendSchema(ImgMetadataSchema):
     preds_results: list[str]
 

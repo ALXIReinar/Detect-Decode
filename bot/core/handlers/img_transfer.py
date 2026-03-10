@@ -24,7 +24,9 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
 
         await message.answer('Обработка...')
 
-        text_from_images = await aio_http.imgs2inference(tg_id, [message.photo[-1].file_id])
+        file_id = message.photo[-1].file_id
+        file_path_list = await bot.get_file(file_id)
+        text_from_images = await aio_http.imgs2inference(tg_id, [file_id], [file_path_list.file_path])
         log_event(f'Получили инференс от АпиСервера | res_len: \033[34m{len(text_from_images)}\033[0m', level='WARNING')
         img_pred = text_from_images[0]
         await bot.delete_message(message.chat.id, message.message_id + 1)
@@ -35,7 +37,7 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
             reply_markup=inference_feedback(img_pred['img_id'])
         )
         await redis.delete(lock_key)
-        log_event('Отдали ответ в бота, сняли лок | tg_id: \033[35m...{str(tg_id)[-5:]}\033[0m')
+        log_event(f'Отдали ответ в бота, сняли лок | tg_id: \033[35m...{str(tg_id)[-5:]}\033[0m')
         return
     
     "Редис-ключи"
@@ -52,11 +54,15 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
         await asyncio.sleep(1.5) # Задержка для сбора всех фото из медиа группы
 
         media_list = await redis.lrange(media_group_key, 0, -1)
+        file_path_list = [
+            (await bot.get_file(file_id)).file_path # собираем file_path, чтобы скачать файлы в ApiService
+            for file_id in media_list
+        ]
 
         await message.answer('Обработка...')
         
         "Отправляем в АпиСервер"
-        text_from_images = await aio_http.imgs2inference(tg_id, media_list)
+        text_from_images = await aio_http.imgs2inference(tg_id, media_list, file_path_list)
         log_event(f'Получили инференс от АпиСервера | res_len: \033[34m{len(text_from_images)}\033[0m', level='WARNING')
         await bot.delete_message(message.chat.id, message.message_id + len(media_list)) # Удаляем сообщение "Обработка..."
 

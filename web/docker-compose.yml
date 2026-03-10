@@ -1,0 +1,42 @@
+services:
+
+  web-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: web-service
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+#    depends_on:
+#      kafka01:
+#        condition: service_healthy
+    restart: on-failure
+    environment:
+      - ENV_FILE=/run/secrets/env.api.prod
+    volumes:
+      - ../web_logs:/app/ml_logs
+      - ./secrets:/app/secrets:ro
+    secrets:
+      - env.api.prod
+    ports:
+      - "127.0.0.1:8100:8000"
+    networks:
+      - api_net
+      - ml_net
+
+networks:
+  api_net:
+    driver: bridge
+    name: web_network
+  ml_net:
+    driver: bridge
+    name: ml_network
+    external: true
+
+secrets:
+  env.ml.prod:
+    file: .env.api.prod

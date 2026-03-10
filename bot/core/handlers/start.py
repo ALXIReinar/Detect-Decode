@@ -15,7 +15,7 @@ async def start_handler(message: Message, aio_http: ApiServerConn):
     """Запрос на сохранение пользователя + Приветствие"""
     f_name = message.from_user.first_name
 
-    await aio_http.save_user(message.from_user.id)
+    await aio_http.save_user(message.from_user.id, message.from_user.first_name, message.from_user.last_name)
 
     await message.answer(MessageTemplates.start_msg.format(f_name))
     await set_commands(bot)
