@@ -23,4 +23,4 @@ ENV PYTHONPATH=/app
 
 USER appuser
 
-#RUN ["python", "-m", "bot.core.main"]
+CMD ["python", "-m", "bot.core.main"]

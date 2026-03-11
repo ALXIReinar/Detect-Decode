@@ -1,4 +1,24 @@
 services:
+  pg_db:
+    image: postgres:16
+    container_name: pg_db
+    environment:
+      - POSTGRES_USER=${PG_ADMIN}
+      - POSTGRES_PASSWORD=${PG_ADMIN_PASSWORD}
+      - POSTGRES_DB=${PG_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_ADMIN}"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: on-failure
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./secrets/dumps:/docker-entrypoint-initdb.d
+    ports:
+      - "127.0.0.1:5431:5432"
+    networks:
+      - api_net
 
   web-service:
     build:
@@ -6,20 +26,21 @@ services:
       dockerfile: Dockerfile
     container_name: web-service
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthcheck')\""]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-#    depends_on:
-#      kafka01:
-#        condition: service_healthy
-    restart: on-failure
+    depends_on:
+      pg_db:
+        condition: service_healthy
+    restart: always
     environment:
       - ENV_FILE=/run/secrets/env.api.prod
     volumes:
-      - ../web_logs:/app/ml_logs
-      - ./secrets:/app/secrets:ro
+      - ../web_logs:/app/web_logs
+      - ./secrets:/app/secrets/certs:ro
+      - ./secrets:/app/secrets/keys:ro
     secrets:
       - env.api.prod
     ports:
@@ -31,12 +52,18 @@ services:
 networks:
   api_net:
     driver: bridge
-    name: web_network
+    name: ocr_web_network
   ml_net:
     driver: bridge
-    name: ml_network
-    external: true
+    name: ocr_ml_network
+  bot_net:
+    driver: bridge
+    name: ocr_bot_network
+
+volumes:
+  pgdata:
+    driver: local
 
 secrets:
-  env.ml.prod:
+  env.api.prod:
     file: .env.api.prod

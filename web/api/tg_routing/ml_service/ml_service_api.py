@@ -1,9 +1,8 @@
-from asyncpg.protocol.record import Record
 from fastapi import APIRouter, HTTPException
 from starlette.requests import Request
 
 from web.api.tg_routing.ml_service.download_tg_files import tg_file_ids2files
-from web.config import AnyAiohttpDep, MLAiohttpDep, env
+from web.config import AnyAiohttpDep, MLAiohttpDep
 from web.data.postgres import PgSqlDep
 from web.schemas.imgs_schema import TgImgSchema, ImgOcrRateSchema
 from web.utils.logger_config import log_event

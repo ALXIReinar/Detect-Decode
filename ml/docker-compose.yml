@@ -47,7 +47,7 @@ services:
       dockerfile: Dockerfile
     container_name: ml-service
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/healthcheck')\""]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -55,24 +55,30 @@ services:
     depends_on:
       kafka01:
         condition: service_healthy
+      web-service:
+        condition: service_healthy
     restart: on-failure
     environment:
       - ENV_FILE=/run/secrets/env.ml.prod
     volumes:
       - ../ml_logs:/app/ml_logs
       - ../s3_samples:/app/s3_samples
-      - ./secrets:/app/secrets:ro
+      - ./secrets:/app/secrets/certs:ro
     secrets:
       - env.ml.prod
     ports:
-      - "127.0.0.1:8100:8000"
+      - "127.0.0.1:8200:8000"
     networks:
       - ml_net
+      - api_net
 
-networks:
-  ml_net:
-    driver: bridge
-    name: ml_network
+#networks:
+#  ml_net:
+#    name: ocr_ml_network
+#    external: true
+#  api_net:
+#    name: ocr_web_network
+#    external: true
 
 secrets:
   env.ml.prod:

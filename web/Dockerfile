@@ -8,7 +8,6 @@ RUN pip3 install --no-cache-dir --user -r requirements.txt
 
 FROM python:3.12-slim
 
-
 RUN groupadd -r appuser && useradd -r -m -g  appuser appuser -d /home/appuser
 
 WORKDIR /app
@@ -22,3 +21,7 @@ ENV PATH=/home/appuser/.local/bin:$PATH
 ENV PYTHONPATH=/app
 
 USER appuser
+
+EXPOSE 8000
+
+CMD ["python", "-m", "web.main"]

@@ -50,7 +50,8 @@ class ImagesQueries:
             status_id = $5
         FROM (
             SELECT img_ids, archive_cloud_paths, words_counts, text_results
-            FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[]) AS t(img_ids, archive_cloud_paths, words_counts, text_results) 
+            FROM UNNEST($1::int[], $2::text[], $3::int[], $4::text[]) 
+            AS t(img_ids, archive_cloud_paths, words_counts, text_results) 
         ) AS pd   
         WHERE ia.id = pd.img_ids
         RETURNING ia.id
