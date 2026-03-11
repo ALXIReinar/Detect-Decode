@@ -13,11 +13,10 @@ class ImagesQueries:
         WITH user_id_from_tg AS (
             SELECT id FROM users WHERE tg_id = $1
         )
-        INSERT INTO img_appeals AS ia (user_id, file_id)
-        SELECT
-            (SELECT id  FROM user_id_from_tg) AS user_id,
-            (SELECT file_id FROM UNNEST($2::text[]) AS file_id) 
-        RETURNING ia.id
+        INSERT INTO img_appeals (user_id, file_id)
+        SELECT u.id, f.file_id FROM user_id_from_tg u
+        CROSS JOIN UNNEST($2::text[]) AS f(file_id)
+        RETURNING id
         '''
         res = await self.conn.fetch(query, tg_id, file_ids)
         return res

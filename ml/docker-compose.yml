@@ -63,7 +63,7 @@ services:
     volumes:
       - ../ml_logs:/app/ml_logs
       - ../s3_samples:/app/s3_samples
-      - ./secrets:/app/secrets/certs:ro
+      - ./secrets/certs:/app/secrets/certs:ro
     secrets:
       - env.ml.prod
     ports:

@@ -37,7 +37,7 @@ class ASGILoggingMiddleware:
             duration = time.perf_counter() - start
 
             "Логируем для мониторинга"
-            if env.app_mode != 'local' and request.url.path != '/api/v1/public/healthcheck':
+            if env.app_mode != 'local' and request.url.path != '/api/v1/healthcheck':
                 log_event(f'HTTP \033[33m{request.method}\033[0m {request.url.path}', request=request,
                           http_status=status_code, response_time=round(duration, 4))
             if duration > 7.0:
