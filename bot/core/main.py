@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiohttp import ClientSession
 from redis.asyncio import Redis
 
-from bot.config import bot, api_base_url, env, redis_settings
+from bot.config import bot, api_base_url, redis_settings
 from bot.core.handlers.callback_center import callback_factory
 from bot.core.handlers.img_transfer import catch_imgs
 from bot.core.utils.aio_http2api_server import ApiServerConn
@@ -20,7 +20,6 @@ async def main():
     "AioHttp"
     aio_http_session = ClientSession(
         base_url=api_base_url,
-        headers={'X-Auth-Service': env.auth_api_service_secret}
     )
     
     "Redis"
@@ -31,6 +30,7 @@ async def main():
     dp.message.register(helping, Command('help'))
 
     dp.message.register(catch_imgs, F.photo)
+    # dp.message.register(catch_imgs, F.document) # не регистрируется через один .register(F.photo, F.document)
 
     "Коллбэки"
     dp.callback_query.register(callback_factory)

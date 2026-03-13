@@ -4,8 +4,16 @@ from typing import Literal
 
 class RedisKeys:
     @staticmethod
-    def media_lock(media_group_id: str | int) -> str:
-        return f'media_lock:{media_group_id}'
+    def media_lock(tg_id: str | int) -> str:
+        return f'media_lock:{tg_id}'
+
+    @staticmethod
+    def media_group(media_group_id: str | int) -> str:
+        return f'media_group:{media_group_id}'
+
+    @staticmethod
+    def rate_limit(tg_id: str | int) -> str:
+        return f'rate_limit:{tg_id}'
 
 
 def post_processing_text(text: str, lang: Literal['ru', 'en', 'ru-en']) -> str:

@@ -1,11 +1,18 @@
-from core.config_dir.config import env
+from dataclasses import dataclass
+
+from starlette.requests import Request
+
+from web.config import env
+
+@dataclass
+class ImgStatuses:
+    processing: int = 1     # "В обработке"
+    success: int = 2        # "Успешно"
 
 
-def create_log_dirs():
-    env.LOG_DIR.mkdir(exist_ok=True)
-
-    debug, info_warn, err = env.LOG_DIR / 'debug', env.LOG_DIR / 'info_warning', env.LOG_DIR / 'error'
-
-    debug.mkdir(exist_ok=True, parents=True)
-    info_warn.mkdir(exist_ok=True, parents=True)
-    err.mkdir(exist_ok=True, parents=True)
+def get_client_ip(request: Request):
+    xff = request.headers.get('X-Forwarded-For')
+    ip = xff.split(',')[0].strip() if (
+            xff and request.client.host in env.trusted_proxies
+    ) else request.client.host
+    return ip
