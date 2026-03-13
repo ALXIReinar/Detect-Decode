@@ -1,7 +1,6 @@
 import secrets
 import time
 
-from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Send, Scope
 
@@ -35,6 +34,7 @@ class ASGIAuthServiceMiddleware:
         auth_header = headers.get(b"x-auth-service")
         
         if not auth_header or not secrets.compare_digest(
+            # auth_header.decode(), env.auth_service_secret Будем переходить на mTLS с аутентификацией по сертификатам
             auth_header.decode(), env.auth_service_secret
         ):
             response = JSONResponse(
@@ -54,8 +54,7 @@ class ASGILoggingMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send):
-        request = Request(scope, receive=receive)
-
+        method, path = scope.get("method", ""), scope.get("raw_path", b"").decode("utf-8")
         start = time.perf_counter()
         status_code = 500  # По умолчанию, если что-то пойдет не так
 
@@ -71,7 +70,7 @@ class ASGILoggingMiddleware:
             duration = time.perf_counter() - start
 
             "Логируем для мониторинга"
-            if env.app_mode != 'local' and request.url.path != '/api/v1/public/healthcheck':
-                log_event(f'HTTP \033[33m{request.method}\033[0m {request.url.path}', request=request, http_status=status_code, response_time=round(duration, 4))
+            if env.app_mode != 'local' and path != '/api/v1/healthcheck':
+                log_event(f'HTTP \033[33m{method}\033[0m {path}', http_status=status_code, response_time=round(duration, 4))
             if duration > 7.0:
-                log_event(f'Долгий ответ | {duration: .4f}', request=request, level='WARNING')
+                log_event(f'Долгий ответ | {duration: .4f}', level='WARNING')

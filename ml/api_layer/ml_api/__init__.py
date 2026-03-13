@@ -8,4 +8,4 @@ main_router.include_router(inference_router)
 
 @main_router.get("/healthcheck")
 async def healthcheck():
-    return {"status": True, 'service': 'ml-server'}
+    return {"status": True, 'service': 'ml-server', 'version': '0.1'}

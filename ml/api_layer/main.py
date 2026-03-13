@@ -1,4 +1,3 @@
-import asyncio
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -6,12 +5,11 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from ml.api_layer.ml_api import main_router
-from ml.api_layer.ml_api.middleware import ASGIAuthServiceMiddleware
+from ml.api_layer.ml_api.middleware import ASGILoggingMiddleware
 from ml.api_layer.ocr_model_driver import OCRModel
 from ml.config import env, broker, word_decoder_weights_path, detector_weights_path
 
 from ml.api_layer.ml_api import s3_consumer # Для иниц консумера при старте брокера
-from ml.logger_config import log_event
 
 
 @asynccontextmanager
@@ -44,8 +42,8 @@ app.add_middleware(
     allow_methods=['*'],
     allow_headers=['*']
 )
-app.add_middleware(ASGIAuthServiceMiddleware)
-app.add_middleware(ASGIAuthServiceMiddleware)
+# app.add_middleware(ASGIAuthServiceMiddleware)
+app.add_middleware(ASGILoggingMiddleware)
 
 
 if __name__ == '__main__':

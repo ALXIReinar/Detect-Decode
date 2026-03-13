@@ -66,7 +66,6 @@ class Settings(BaseSettings):
     
     app_mode: AppMode
     domain: str
-    auth_service_secret: str
     trusted_proxies: set[str] = {"127.0.0.1", "172.18.0.1"}
     uvi_workers: int
     post_processing_responses: bool  # Влияет на производительность API

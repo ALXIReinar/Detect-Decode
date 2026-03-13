@@ -15,7 +15,9 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: bot
-    command: python -m bot.core.main
+    depends_on:
+      web-service:
+        condition: service_healthy
     environment:
       - ENV_FILE=/run/secrets/.env.bot.prod
     volumes:
@@ -23,13 +25,16 @@ services:
     secrets:
       - .env.bot.prod
     networks:
-      bot_net:
+      - bot_net
+      - api_net
 
-
-networks:
-  bot_net:
-    driver: bridge
-    name: ocr_bot_net
+#networks:
+#  bot_net:
+#    name: ocr_bot_network
+#    external: true
+#  api_net:
+#    name: ocr_web_network
+#    external: true
 
 volumes:
   redis_data:
