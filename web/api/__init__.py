@@ -8,4 +8,4 @@ main_router.include_router(tg_router)
 
 @main_router.get('/healthcheck')
 async def healthcheck():
-    return {"status": True, "version": '0.1'}
+    return {"status": True, "server": "api-server", "version": '0.1'}

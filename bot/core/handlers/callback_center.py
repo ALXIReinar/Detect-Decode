@@ -10,7 +10,7 @@ from bot.logger_config import log_event
 
 
 @rate_limit(env.user_req_limit, env.user_req_window_seconds)
-async def callback_factory(call: CallbackQuery, state: FSMContext, redis: Redis, aio_http: ApiServerConn):
+async def callback_factory(call: CallbackQuery, redis: Redis, state: FSMContext, aio_http: ApiServerConn):
     call_data = call.data
 
     if call_data.startswith('inference-rate'):

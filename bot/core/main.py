@@ -30,6 +30,7 @@ async def main():
     dp.message.register(helping, Command('help'))
 
     dp.message.register(catch_imgs, F.photo)
+    # dp.message.register(catch_imgs, F.document) # не регистрируется через один .register(F.photo, F.document)
 
     "Коллбэки"
     dp.callback_query.register(callback_factory)

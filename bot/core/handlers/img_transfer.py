@@ -13,7 +13,11 @@ from bot.logger_config import log_event
 
 
 @rate_limit(env.user_req_limit, env.user_req_window_seconds)
-async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
+async def catch_imgs(message: Message, redis: Redis, aio_http: ApiServerConn):
+    """
+    Для обработки документов(фото-файлов) требуется доработать логику для выбора между message.photo и message.document
+
+    """
     tg_id = message.from_user.id
 
     "Если фото только одно"
