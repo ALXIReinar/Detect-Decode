@@ -5,7 +5,7 @@ from aiogram.filters import Command
 from aiohttp import ClientSession
 from redis.asyncio import Redis
 
-from bot.config import bot, api_base_url, env, redis_settings
+from bot.config import bot, api_base_url, redis_settings
 from bot.core.handlers.callback_center import callback_factory
 from bot.core.handlers.img_transfer import catch_imgs
 from bot.core.utils.aio_http2api_server import ApiServerConn

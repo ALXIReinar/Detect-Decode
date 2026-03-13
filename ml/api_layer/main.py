@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware
 
 from ml.api_layer.ml_api import main_router
-from ml.api_layer.ml_api.middleware import ASGIAuthServiceMiddleware, ASGILoggingMiddleware
+from ml.api_layer.ml_api.middleware import ASGILoggingMiddleware
 from ml.api_layer.ocr_model_driver import OCRModel
 from ml.config import env, broker, word_decoder_weights_path, detector_weights_path
 

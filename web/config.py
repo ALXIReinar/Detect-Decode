@@ -19,7 +19,7 @@ env_files = (
     '.env.api.prod'
 )
 load_dotenv(env_files, override=True)
-logging.critical(f'\033[35m{env_files}\033[0m')
+logging.critical(f'\033[35m{env_files}\033[0m | app_mode: \033[32m{os.getenv('APP_MODE')}\033[0m')
 
 "Создаём директории"
 WORKDIR = Path(__file__).resolve().parent.parent

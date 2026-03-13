@@ -45,7 +45,7 @@ async def s3_consumer(body: S3SendSchema):
                     with open(archive_path, 'rb') as f:
                         await s3.save_file(f, archive_key)
                     
-                    log_event(f"Uploaded archive for img_id={img_id} to S3: {archive_key}")
+                    log_event(f"Архив в облаке | img_id=\033[32m{img_id}\033[0m; s3_path: \033[33m{archive_key}\033[0m")
                     
                     "3. Перемещаем архив после S3 upload (защита от cron)"
                     move_archive_as_succeeded(archive_path)

@@ -19,6 +19,8 @@ class ASGILoggingMiddleware:
 
         request = Request(scope, receive=receive)
 
+        # client = scope.get("client")
+        # client_host = client[0] if client else ''
         ip = get_client_ip(request)
         request.state.client_ip = ip
 

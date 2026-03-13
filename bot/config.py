@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     admin_id: int
 
     app_mode: AppMode
+    user_req_limit: int
+    user_req_window_seconds: int
     domain: str
 
     model_config = SettingsConfigDict(extra='allow')

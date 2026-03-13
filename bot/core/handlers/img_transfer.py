@@ -3,13 +3,16 @@ import asyncio
 from aiogram.types import Message
 from redis.asyncio import Redis
 
-from bot.config import bot
+from bot.config import bot, env
 from bot.core.utils.aio_http2api_server import ApiServerConn
 from bot.core.utils.anything import RedisKeys, post_processing_text
 from bot.core.utils.keyboards import inference_feedback
+from bot.core.utils.rate_limiter import rate_limit
 from bot.logger_config import log_event
 
 
+
+@rate_limit(env.user_req_limit, env.user_req_window_seconds)
 async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
     tg_id = message.from_user.id
 
@@ -41,7 +44,7 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
         return
     
     "Редис-ключи"
-    media_group_key = f"media_group:{message.media_group_id}"
+    media_group_key = RedisKeys.media_group(message.media_group_id)
     lock_key = RedisKeys.media_lock(message.media_group_id)
     
     "Добавляем file_id в Redis список для этой media_group"
@@ -65,6 +68,12 @@ async def catch_imgs(message: Message, aio_http: ApiServerConn, redis: Redis):
         text_from_images = await aio_http.imgs2inference(tg_id, media_list, file_path_list)
         log_event(f'Получили инференс от АпиСервера | res_len: \033[34m{len(text_from_images)}\033[0m', level='WARNING')
         await bot.delete_message(message.chat.id, message.message_id + len(media_list)) # Удаляем сообщение "Обработка..."
+
+        "Фоллбек если нет сообщений для отправки"
+        if len(text_from_images) == 0:
+            log_event(f'Пользователь не получил предсказаний!!! media_list: {media_list}', level='CRITICAL')
+            await message.answer('К сожалению, не удалось получить ответ. Мы уже решаем эту проблему⚠️⚙️')
+            await bot.send_message(env.admin_id, f'Пользователь <b>{message.from_user.id}</b>\nНе получил инференс. file_ids:\n{'\n'.join(media_list)}')
 
         "Постпроцессинг + Отправка"
         for img_pred in text_from_images:
