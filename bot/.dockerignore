@@ -1,12 +1,11 @@
 ### Python template
 # Byte-compiled / optimized / DLL files
-__pycache__/
+**/__pycache__
 *.py[cod]
 *$py.class
 
 # C extensions
 *.so
-
 # Distribution / packaging
 .Python
 build/
@@ -107,8 +106,10 @@ ipython_config.py
 #pdm.lock
 #   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
 #   in version control.
-#   https://pdm.fming.dev/#use-with-ide
+#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
 .pdm.toml
+.pdm-python
+.pdm-build/
 
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
@@ -121,10 +122,13 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-*.env
+.env
+.venv
 env/
+venv/
 ENV/
 env.bak/
+venv.bak/
 
 # Spyder project settings
 .spyderproject
@@ -155,27 +159,7 @@ cython_debug/
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-.env.prod
-.env.test
-fail_realisations.py
 .idea/
 .venv/
-logs/
-secrets/
-dataset/
-*deprecated/
-*.pth
-.kiro/
-ml_docs/
-visualizations/
-quick_check.py
-test_resolution.py
-download_russian_datasets.py
-*.png
-TRAINING_README.md
-ml/local_wheels/
-ml_logs/
-bot_logs/
-s3_samples/
 .env*
-1.py
+secrets/
