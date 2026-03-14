@@ -6,8 +6,8 @@ from starlette.requests import Request
 
 from ml.api_layer.di_injections import OCRDep
 from ml.api_layer.ml_api.schemas import ImgMetadataSchema, S3SendSchema
-from ml.api_layer.ml_api.utils import process_batch_images, save_result_text
-from ml.config import broker, env
+from ml.api_layer.utils import process_batch_images, save_result_text
+from ml.config import broker
 from ml.logger_config import log_event
 
 router = APIRouter(prefix="/inference/ocr", tags=["🔮Inference"])

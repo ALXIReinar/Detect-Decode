@@ -33,16 +33,16 @@ class DetectorAugment(nn.Module):
         ])
         
         # GPU augmentations - тяжелые операции на GPU
-        self.gpu_train_transform = v2.Compose([
-            v2.RandomAffine(
-                degrees=0,
-                translate=(0.1, 0.1),
-                scale=(0.9, 1.1)
-            ),
-            v2.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
-            v2.RandomAutocontrast(p=0.5),
-            v2.SanitizeBoundingBoxes(min_size=2),
-        ])
+        # self.gpu_train_transform = v2.Compose([
+        #     v2.RandomAffine(
+        #         degrees=0,
+        #         translate=(0.1, 0.1),
+        #         scale=(0.9, 1.1)
+        #     ),
+        #     v2.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
+        #     v2.RandomAutocontrast(p=0.5),
+        #     v2.SanitizeBoundingBoxes(min_size=2),
+        # ])
 
     def forward(self, img, target=None):
         # CPU preprocessing (всегда)

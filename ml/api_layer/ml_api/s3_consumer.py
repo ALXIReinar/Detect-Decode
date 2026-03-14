@@ -1,6 +1,6 @@
 from ml.api_layer.ml_api.s3_storage import get_consumer_cloud_session
 from ml.api_layer.ml_api.schemas import S3SendSchema
-from ml.api_layer.ml_api.utils import create_archive, move_archive_as_succeeded
+from ml.api_layer.utils import create_archive, move_archive_as_succeeded
 from ml.config import broker, env
 from ml.logger_config import log_event
 

@@ -6,10 +6,11 @@ from PIL import Image
 import torch.nn.functional as F
 from ultralytics.utils.nms import non_max_suppression
 
-from ml.api_layer.ml_api.utils import save_word_crop
+from ml.api_layer.utils import save_word_crop
 from ml.config import env
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from ml.detector.models import WordDetector
+from ml.env_modes import AppMode
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions
@@ -112,7 +113,8 @@ class OCRModel:
     """
     
     def __init__(self, detector_weights_path: Path, word_decoder_weights_path: Path, 
-                 conf_thres: float = 0.25, iou_thres: float = 0.45, max_det: int = 600):
+                 conf_thres: float = 0.25, iou_thres: float = 0.45, max_det: int = 600,
+                 vertical_padding_ratio: float = 0.05):
         """
         Инициализация OCR модели.
         
@@ -122,6 +124,7 @@ class OCRModel:
             conf_thres: порог уверенности для NMS (default: 0.25)
             iou_thres: порог IoU для NMS (default: 0.45)
             max_det: максимальное количество детекций (default: 600)
+            vertical_padding_ratio: процент расширения bbox по вертикали (default: 0.05 = 5%)
         """
         self.detector = DetectorModel(detector_weights_path)
         self.word_decoder = CRNNModel(word_decoder_weights_path)
@@ -130,6 +133,9 @@ class OCRModel:
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.max_det = max_det
+        
+        # Параметр адаптивного расширения bbox
+        self.vertical_padding_ratio = vertical_padding_ratio
 
 
     def _detect_words(self, img: Image.Image):
@@ -196,29 +202,39 @@ class OCRModel:
             image_crop_idx: int | None = None
     ) -> Image.Image:
         """
-        Вырезает слово из изображения по bbox.
+        Вырезает слово из изображения по bbox с адаптивным расширением.
+        
+        Применяет вертикальное расширение bbox для уменьшения обрезания символов.
         
         Args:
             img: исходное изображение
             bbox: [x1, y1, x2, y2]
-            orig_img_id: id исходного изображения
+            orig_img_id: id исходного изображения (None для тестирования)
             image_crop_idx: inner id для слова-картинки
+            
         Returns:
-            cropped image
+            cropped image с расширенным bbox
         """
-        x1, y1, x2, y2 = map(int, bbox)
+        x1, y1, x2, y2 = bbox
         
-        # Проверяем границы
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(img.width, x2)
-        y2 = min(img.height, y2)
+        # Вычисляем высоту bbox
+        bbox_height = y2 - y1
         
-        # Вырезаем
-        word_img = img.crop((x1, y1, x2, y2))
+        # Адаптивное вертикальное расширение (5-7% от высоты)
+        v_padding = int(bbox_height * self.vertical_padding_ratio)
+        
+        # Применяем расширение с проверкой границ изображения
+        y1_expanded = max(0, int(y1 - v_padding))
+        y2_expanded = min(img.height, int(y2 + v_padding))
+        x1_safe = max(0, int(x1))
+        x2_safe = min(img.width, int(x2))
+        
+        # Вырезаем с расширенным bbox
+        word_img = img.crop((x1_safe, y1_expanded, x2_safe, y2_expanded))
+        
+        # Сохраняем crop на диск (если не тестирование)
         if orig_img_id is not None and image_crop_idx is not None:
             save_word_crop(word_img, orig_img_id, image_crop_idx)
-
         
         return word_img
     
@@ -263,9 +279,11 @@ class OCRModel:
         """
         Сортирует слова по позиции: сверху вниз, слева направо.
         
-        Логика:
-            1. Группируем слова по строкам (по Y координате)
-            2. Внутри каждой строки сортируем по X координате
+        Улучшенная логика с кластеризацией строк:
+            1. Вычисляем глобальную среднюю высоту bbox + tolerance (10%)
+            2. Группируем слова в строки по Y координате
+            3. Для каждой строки пересчитываем локальную среднюю Y
+            4. Сортируем строки по средней Y, слова внутри строк по X
         
         Args:
             words_data: список словарей с ключами "text", "bbox", "confidence"
@@ -288,32 +306,39 @@ class OCRModel:
             word["center_y"] = centers_y[i]
             word["height"] = heights[i]
         
-        # Группируем по строкам (tolerance = средняя высота слова)
+        # Глобальная средняя высота + tolerance (10% вместо 50%)
         avg_height = heights.mean()
-        line_tolerance = avg_height * 0.5  # Слова в одной строке если разница по Y < 50% высоты
+        tolerance = avg_height * 0.1  # Более строгая группировка
         
-        # Сортируем по Y (сверху вниз)
-        words_sorted_by_y = sorted(words_data, key=lambda w: w["center_y"])
+        # Сортируем по Y для группировки
+        words_sorted = sorted(words_data, key=lambda w: w["center_y"])
         
-        # Группируем в строки
+        # Кластеризация строк с пересчётом локальной средней Y
         lines = []
-        current_line = [words_sorted_by_y[0]]
+        current_line = [words_sorted[0]]
+        current_line_y = words_sorted[0]["center_y"]
         
-        for word in words_sorted_by_y[1:]:
-            # Если слово на той же строке (разница по Y небольшая)
-            if abs(word["center_y"] - current_line[-1]["center_y"]) < line_tolerance:
+        for word in words_sorted[1:]:
+            if abs(word["center_y"] - current_line_y) < tolerance:
+                # Та же строка
                 current_line.append(word)
             else:
-                # Новая строка
-                lines.append(current_line)
+                # Новая строка - пересчитываем локальную среднюю Y
+                line_y_values = [w["center_y"] for w in current_line]
+                current_line_y = np.mean(line_y_values)
+                
+                lines.append((current_line_y, current_line))
                 current_line = [word]
+                current_line_y = word["center_y"]
         
         # Добавляем последнюю строку
-        lines.append(current_line)
+        line_y_values = [w["center_y"] for w in current_line]
+        current_line_y = np.mean(line_y_values)
+        lines.append((current_line_y, current_line))
         
-        # Сортируем слова внутри каждой строки по X (слева направо)
+        # Сортируем строки по средней Y, слова внутри по X (слева направо)
         sorted_words = []
-        for line in lines:
+        for _, line in sorted(lines, key=lambda x: x[0]):
             line_sorted = sorted(line, key=lambda w: w["center_x"])
             sorted_words.extend(line_sorted)
         
@@ -328,7 +353,7 @@ class OCRModel:
             - Строки разделяются переносом строки
         
         Args:
-            words_data: отсортированный список слов
+            words_data: отсортированный список слов (уже отсортированы через _sort_words_by_position)
             
         Returns:
             полный текст
@@ -339,21 +364,21 @@ class OCRModel:
         # ВЕКТОРИЗАЦИЯ: Вычисляем среднюю высоту через NumPy
         heights = np.array([w["height"] for w in words_data])
         avg_height = heights.mean()
-        line_tolerance = avg_height * 0.5
+        line_tolerance = avg_height * 0.1  # Используем ту же tolerance что и в _sort_words_by_position
         
         lines = []
         current_line = [words_data[0]["text"]]
-        prev_y = words_data[0]["center_y"]
+        current_line_y = words_data[0]["center_y"]
         
         for word in words_data[1:]:
-            # Если на той же строке
-            if abs(word["center_y"] - prev_y) < line_tolerance:
+            # Если на той же строке (используем текущую среднюю Y строки)
+            if abs(word["center_y"] - current_line_y) < line_tolerance:
                 current_line.append(word["text"])
             else:
-                # Новая строка
+                # Новая строка - сохраняем текущую и начинаем новую
                 lines.append(" ".join(current_line))
                 current_line = [word["text"]]
-                prev_y = word["center_y"]
+                current_line_y = word["center_y"]
         
         # Добавляем последнюю строку
         lines.append(" ".join(current_line))
@@ -363,72 +388,97 @@ class OCRModel:
         
         return full_text
 
-    def _recognize_words_batch(self, word_imgs: list[Image.Image], batch_size: int = 32) -> list[str]:
+    def _recognize_words_batch(self, word_imgs: list[Image.Image], batch_size: int = 32, return_raw: bool = False):
         """
-        Распознаёт батч слов одновременно (ОПТИМИЗАЦИЯ).
+        Распознаёт батч слов одновременно с оптимизированным паддингом (ОПТИМИЗАЦИЯ).
         
-        Использует паддинг для выравнивания ширины изображений (как в collate_fn).
+        Использует квартильную сегментацию для минимизации паддинга:
+        - Сортирует изображения по ширине
+        - Делит на сегменты по 25%
+        - Каждый сегмент паддит до максимальной ширины внутри сегмента
+        - Восстанавливает исходный порядок
         
         Args:
             word_imgs: список изображений слов
             batch_size: размер батча (default: 32)
             
         Returns:
-            список распознанных текстов
+            список распознанных слов в исходном порядке(как на изображении)
         """
         if len(word_imgs) == 0:
             return []
         
+        # Измеряем ширины всех изображений
+        widths = [img.size[0] for img in word_imgs]
+        
+        # Сортируем по ширине (сохраняем индексы для восстановления порядка)
+        sorted_indices = sorted(range(len(word_imgs)), key=lambda i: widths[i])
+        sorted_imgs = [word_imgs[i] for i in sorted_indices]
+        
+        # Вычисляем размер сегмента (25% от общего количества)
+        segment_size = max(1, len(sorted_imgs) // 4)  # Минимум 1 изображение в сегменте
+        
         all_predictions = []
         
-        # Обрабатываем батчами по batch_size
-        for i in range(0, len(word_imgs), batch_size):
-            batch = word_imgs[i:i + batch_size]
+        # Обрабатываем сегментами
+        for seg_start in range(0, len(sorted_imgs), segment_size):
+            segment = sorted_imgs[seg_start:seg_start + segment_size]
             
-            # Конвертируем все изображения в grayscale
-            batch_gray = [img.convert('L') for img in batch]
-            
-            # Трансформируем все изображения
-            img_tensors = [self.word_decoder.dataset_obj.transform(img) for img in batch_gray]
-            orig_widths = [t.shape[2] for t in img_tensors]
-            
-            # Находим максимальную ширину в батче
-            max_width = max(orig_widths)
-            
-            # ВЕКТОРИЗАЦИЯ: Паддим все изображения через torch.nn.functional.pad
-            padded_tensors = []
-            for img_tensor in img_tensors:
-                w = img_tensor.shape[2]
-                if w < max_width:
-                    # F.pad: (left, right, top, bottom)
-                    # Паддим справа до max_width белым цветом (1.0)
-                    padding = (0, max_width - w, 0, 0)
-                    padded_img = F.pad(img_tensor, padding, mode='constant', value=1.0)
-                    padded_tensors.append(padded_img)
-                else:
-                    padded_tensors.append(img_tensor)
-            
-            # Стакаем в батч
-            batch_tensor = torch.stack(padded_tensors)  # [batch, C, H, max_width]
-            
-            # Применяем ImageNet нормализацию
-            batch_tensor = self.word_decoder.dataset_obj.imagenet_normalize(batch_tensor)
-            
-            # Перемещаем на device
-            batch_tensor = batch_tensor.to(env.device)
-            
-            # Forward через CRNN
-            self.word_decoder.model.eval()
-            with torch.no_grad():
-                log_probs = self.word_decoder.model(batch_tensor)  # [seq_len, batch, num_classes]
-            
-            # CTC декодирование
-            predictions = decode_predictions(log_probs, self.word_decoder.dataset_obj, blank_idx=0)
-            all_predictions.extend(predictions)
+            # Обрабатываем сегмент батчами
+            for i in range(0, len(segment), batch_size):
+                batch = segment[i:i + batch_size]
+                
+                # Конвертируем все изображения в grayscale
+                batch_gray = [img.convert('L') for img in batch]
+                
+                # Трансформируем все изображения
+                img_tensors = [self.word_decoder.dataset_obj.transform(img) for img in batch_gray]
+                orig_widths = [t.shape[2] for t in img_tensors]
+                
+                # Находим максимальную ширину в БАТЧЕ (не в сегменте)
+                max_width = max(orig_widths)
+                
+                # ВЕКТОРИЗАЦИЯ: Паддим все изображения через torch.nn.functional.pad
+                padded_tensors = []
+                for img_tensor in img_tensors:
+                    w = img_tensor.shape[2]
+                    if w < max_width:
+                        # F.pad: (left, right, top, bottom)
+                        # Паддим справа до max_width белым цветом (1.0)
+                        padding = (0, max_width - w, 0, 0)
+                        padded_img = F.pad(img_tensor, padding, mode='constant', value=1.0)
+                        padded_tensors.append(padded_img)
+                    else:
+                        padded_tensors.append(img_tensor)
+                
+                # Стакаем в батч
+                batch_tensor = torch.stack(padded_tensors)  # [batch, C, H, max_width]
+                
+                # Применяем ImageNet нормализацию
+                batch_tensor = self.word_decoder.dataset_obj.imagenet_normalize(batch_tensor)
+                
+                # Перемещаем на device
+                batch_tensor = batch_tensor.to(env.device)
+                
+                # Forward через CRNN
+                self.word_decoder.model.eval()
+                with torch.no_grad():
+                    log_probs = self.word_decoder.model(batch_tensor)  # [seq_len, batch, num_classes]
+                
+                # CTC декодирование
+                predictions = decode_predictions(log_probs, self.word_decoder.dataset_obj, blank_idx=0)
+                all_predictions.extend(predictions)
         
-        return all_predictions
+        # Восстанавливаем исходный порядок
+        original_order_predictions = [''] * len(word_imgs)
+        for i, pred in zip(sorted_indices, all_predictions):
+            original_order_predictions[i] = pred
+
+        if return_raw:
+            return original_order_predictions, log_probs
+        return original_order_predictions
     
-    def _detect_words_batch(self, imgs: list[Image.Image]) -> list[tuple]:
+    def _detect_words_batch(self, imgs: list[Image.Image], return_raw: bool = False):
         """
         Детекция слов на батче изображений (ОПТИМИЗАЦИЯ).
         
@@ -486,15 +536,20 @@ class OCRModel:
             class_ids = detections_np[:, 5].astype(int).tolist()
             
             results.append((bboxes_original, confidences, class_ids))
-        
+
+        if return_raw:
+            return results, preds_nms
         return results
-    
+
+
+
     def forward_pass(
         self, 
         imgs: list[Image.Image],
-        img_ids: list[int],
-        return_details: bool = False
-    ) -> list[dict]:
+        img_ids: list[int] | list[None],
+        return_details: bool = False,
+        return_raw_predictions: bool = False
+    ) -> list[dict] | tuple[list[dict], dict]:
         """
         Батчинг OCR для одного или нескольких изображений.
         Чтобы подать одно изображение - обернуть в список
@@ -503,17 +558,42 @@ class OCRModel:
         
         Args:
             imgs: список изображений
-            img_ids: список id изображений в БД
+            img_ids: список id изображений в БД. Список None только для тестирования модели!
             return_details: возвращать детальную информацию
+            return_raw_predictions: возвращать сырые предсказания для расчёта loss (только для тестирования)
             
         Returns:
-            список результатов для каждого изображения
+            Если return_raw_predictions=False:
+                список результатов для каждого изображения
+            Если return_raw_predictions=True:
+                (список результатов, dict с сырыми предсказаниями)
+                raw_predictions = {
+                    'crnn_log_probs': list[torch.Tensor],  # [seq_len, num_classes] для каждого слова
+                    'detector_preds': list[torch.Tensor],  # [num_boxes, 6] для каждого изображения (до NMS)
+                }
         """
+
         if len(imgs) == 0:
+            if return_raw_predictions:
+                return [], {'crnn_log_probs': [], 'detector_preds': []}
             return []
-        
+
+        # Валидация. Нельзя передать пустой список img_ids, если продакшн режим
+        if isinstance(img_ids[0], type(None)) and env.app_mode == AppMode.PROD:
+            raise TypeError('You cannot pass img_ids as list[None] in the production environment (app_mode=prod)')
+
+        # Для сбора сырых предсказаний
+        raw_predictions = {
+            'crnn_log_probs': [],
+            'detector_preds': []
+        } if return_raw_predictions else None
+
         # 1. Детекция для всех изображений (батчинг детектора)
-        batch_detections = self._detect_words_batch(imgs)
+        if return_raw_predictions:
+            batch_detections, detector_raw_preds = self._detect_words_batch(imgs, return_raw=True)
+            raw_predictions['detector_preds'] = detector_raw_preds
+        else:
+            batch_detections = self._detect_words_batch(imgs)
         
         results = []
         
@@ -530,11 +610,15 @@ class OCRModel:
                 results.append(empty_result)
                 continue
             
-            # Вырезаем все слова и сохраняем их в папку
+            # Вырезаем все слова (без сохранения на диск если img_id=None)
             word_imgs = [self._crop_word(img, bbox, img_id, idx) for idx, bbox in enumerate(bboxes)]
             
             # Распознаём батчем (батчинг word decoder)
-            word_texts = self._recognize_words_batch(word_imgs)
+            if return_raw_predictions:
+                word_texts, word_log_probs = self._recognize_words_batch(word_imgs, return_raw=True)
+                raw_predictions['crnn_log_probs'].extend(word_log_probs)
+            else:
+                word_texts = self._recognize_words_batch(word_imgs)
             
             # Формируем words_data
             words_data = [
@@ -562,4 +646,6 @@ class OCRModel:
             else:
                 results.append({"text": full_text})
         
+        if return_raw_predictions:
+            return results, raw_predictions
         return results
