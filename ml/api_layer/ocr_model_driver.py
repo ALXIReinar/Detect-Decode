@@ -11,6 +11,7 @@ from ml.config import env
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from ml.detector.models import WordDetector
 from ml.env_modes import AppMode
+from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions
@@ -112,9 +113,12 @@ class OCRModel:
         4. Sort & Merge → сортируем по координатам и склеиваем текст
     """
     
-    def __init__(self, detector_weights_path: Path, word_decoder_weights_path: Path, 
-                 conf_thres: float = 0.25, iou_thres: float = 0.45, max_det: int = 600,
-                 vertical_padding_ratio: float = 0.05):
+    def __init__(
+            self,
+            detector_weights_path: Path, word_decoder_weights_path: Path,
+            conf_thres: float = 0.25, iou_thres: float = 0.45, max_det: int = 600,
+            vertical_padding_ratio: float = 0.05
+    ):
         """
         Инициализация OCR модели.
         
@@ -137,62 +141,6 @@ class OCRModel:
         # Параметр адаптивного расширения bbox
         self.vertical_padding_ratio = vertical_padding_ratio
 
-
-    def _detect_words(self, img: Image.Image):
-        """
-        Детекция слов на изображении.
-        
-        Args:
-            img: оригинальное изображение (любого размера)
-        
-        Returns:
-            bboxes: list of [x1, y1, x2, y2] в координатах ОРИГИНАЛЬНОГО изображения
-            confidences: list of float
-            class_ids: list of int
-        """
-
-        # Сохраняем оригинальный размер
-        orig_width, orig_height = img.size
-        
-        # Преобразуем в тензор (ресайз до 1280x1280)
-        img_tensor = self.detector.dataset_obj.transform(img).unsqueeze(0).to(env.device)
-        
-        # Получаем размер после трансформации (должен быть 1280x1280)
-        resized_size = self.detector.img_size
-        
-        # Forward через детектор
-        self.detector.model.eval()
-        with torch.no_grad():
-            preds = self.detector.model(img_tensor)
-        
-        # NMS (Non-Maximum Suppression)
-        preds_nms = non_max_suppression(
-            preds,
-            conf_thres=self.conf_thres,
-            iou_thres=self.iou_thres,
-            agnostic=True,
-            max_det=self.max_det,
-            nc=self.detector.model.nc
-        )
-        
-        # Извлекаем результаты
-        if len(preds_nms) == 0 or preds_nms[0] is None or len(preds_nms[0]) == 0:
-            return [], [], []
-        
-        detections = preds_nms[0].cpu().numpy()  # [N, 6] - [x1, y1, x2, y2, conf, cls]
-        
-        # Bboxes в координатах ресайзнутого изображения (1280x1280)
-        bboxes_resized = detections[:, :4]  # [N, 4] - [x1, y1, x2, y2]
-        
-        # ВЕКТОРИЗАЦИЯ: Масштабируем все bboxes одновременно через NumPy
-        scale = np.array([orig_width / resized_size, orig_height / resized_size, 
-                         orig_width / resized_size, orig_height / resized_size])
-        bboxes_original = (bboxes_resized * scale).tolist()
-        
-        confidences = detections[:, 4].tolist()
-        class_ids = detections[:, 5].astype(int).tolist()
-        
-        return bboxes_original, confidences, class_ids
     
     def _crop_word(
             self,
@@ -237,43 +185,7 @@ class OCRModel:
             save_word_crop(word_img, orig_img_id, image_crop_idx)
         
         return word_img
-    
-    def _recognize_word(self, word_img: Image.Image) -> str:
-        """
-        Распознаёт текст на вырезанном слове.
-        
-        Args:
-            word_img: изображение слова
-            
-        Returns:
-            распознанный текст
-        """
-        # Конвертируем в grayscale
-        if word_img.mode != 'L':
-            word_img = word_img.convert('L')
-        
-        # Преобразуем в тензор
-        img_tensor = self.word_decoder.dataset_obj.transform(word_img).unsqueeze(0)
-        
-        # Применяем ImageNet нормализацию (как в collate_fn)
-        img_tensor = self.word_decoder.dataset_obj.imagenet_normalize(img_tensor)
-        
-        # Перемещаем на device
-        img_tensor = img_tensor.to(env.device)
-        
-        # Forward через CRNN
-        self.word_decoder.model.eval()
-        with torch.no_grad():
-            log_probs = self.word_decoder.model(img_tensor)  # [seq_len, batch, num_classes]
-        
-        # CTC декодирование
 
-        predictions = decode_predictions(log_probs, self.word_decoder.dataset_obj, blank_idx=0)
-        
-        if len(predictions) > 0:
-            return predictions[0]
-        else:
-            return ""
     
     def _sort_words_by_position(self, words_data: list[dict]) -> list[dict]:
         """
@@ -344,6 +256,7 @@ class OCRModel:
         
         return sorted_words
     
+    
     def _merge_words_to_text(self, words_data: list[dict]) -> str:
         """
         Склеивает слова в текст с учётом строк.
@@ -401,12 +314,14 @@ class OCRModel:
         Args:
             word_imgs: список изображений слов
             batch_size: размер батча (default: 32)
+            return_raw: возвращать сырые log_probs (для тестирования)
             
         Returns:
             список распознанных слов в исходном порядке(как на изображении)
+            или (список слов, список log_probs) если return_raw=True
         """
         if len(word_imgs) == 0:
-            return []
+            return [] if not return_raw else ([], [])
         
         # Измеряем ширины всех изображений
         widths = [img.size[0] for img in word_imgs]
@@ -419,6 +334,7 @@ class OCRModel:
         segment_size = max(1, len(sorted_imgs) // 4)  # Минимум 1 изображение в сегменте
         
         all_predictions = []
+        all_log_probs = [] if return_raw else None
         
         # Обрабатываем сегментами
         for seg_start in range(0, len(sorted_imgs), segment_size):
@@ -463,10 +379,14 @@ class OCRModel:
                 # Forward через CRNN
                 self.word_decoder.model.eval()
                 with torch.no_grad():
-                    log_probs = self.word_decoder.model(batch_tensor)  # [seq_len, batch, num_classes]
+                    logits = self.word_decoder.model(batch_tensor)  # [seq_len, batch, num_classes] - RAW LOGITS
                 
-                # CTC декодирование
-                predictions = decode_predictions(log_probs, self.word_decoder.dataset_obj, blank_idx=0)
+                # Сохраняем logits если нужно
+                if return_raw:
+                    all_log_probs.append(logits)
+                
+                # CTC декодирование (greedy decode)
+                predictions = decode_predictions(logits, self.word_decoder.dataset_obj, blank_idx=0)
                 all_predictions.extend(predictions)
         
         # Восстанавливаем исходный порядок
@@ -475,9 +395,10 @@ class OCRModel:
             original_order_predictions[i] = pred
 
         if return_raw:
-            return original_order_predictions, log_probs
+            return original_order_predictions, all_log_probs
         return original_order_predictions
-    
+
+
     def _detect_words_batch(self, imgs: list[Image.Image], return_raw: bool = False):
         """
         Детекция слов на батче изображений (ОПТИМИЗАЦИЯ).

@@ -16,7 +16,7 @@ from ml.api_layer.ml_api import s3_consumer # Для иниц консумера
 async def lifespan(web_app):
     """"""
     "Загрузка модели"
-    web_app.state.ocr_model = OCRModel(detector_weights_path, word_decoder_weights_path, max_det=env.max_det)
+    web_app.state.ocr_model = OCRModel(detector_weights_path, word_decoder_weights_path, use_beam_search=True, max_det=env.max_det)
 
     "Соединение с Кафкой"
     await broker.start()

@@ -1,6 +1,3 @@
-"""
-Датасет для тестирования всего OCR пайплайна (детектор + декодер).
-"""
 import xml.etree.ElementTree as ET
 from pathlib import Path
 

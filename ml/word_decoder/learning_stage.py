@@ -9,7 +9,7 @@ from ml.logger_config import log_event
 
 
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import OneCycleLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import OneCycleLR
 from datetime import datetime
 from torch.utils.data import DataLoader
 
@@ -69,7 +69,7 @@ def train_run():
 # Гиперпараметры
 # ======================================================================================================================
 
-    epochs = 50
+    epochs = 55
 
     hidden_size = 256
     lstm_layers = 3

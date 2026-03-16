@@ -111,7 +111,7 @@ def decode_predictions(
     blank_idx: int = 0
 ) -> list[str]:
     """
-    Декодирует предсказания модели в текст.
+    Декодирует предсказания модели в текст (greedy decoding).
     
     Args:
         predictions: [seq_len, batch, num_classes] - выход модели

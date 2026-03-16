@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -58,6 +59,9 @@ class CRNNWordAugment(nn.Module):
         super().__init__()
         self.mode = mode
         self.img_height = img_height
+        
+        # CLAHE для улучшения контраста
+        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) # применяется всегда
 
         "Аугментации для обучения"
         if mode == 'train':
@@ -79,11 +83,14 @@ class CRNNWordAugment(nn.Module):
     def forward(self, img: Image.Image) -> torch.Tensor:
         """"""
         "Сначала Resize + сохранение пропорций"
-
-
         w, h = img.size
         new_w = max(16, min(int(self.img_height * (w / h)), 512))
         img = img.resize((new_w, self.img_height), Image.Resampling.BILINEAR)
+        
+        "Применяем CLAHE для улучшения контраста (всегда, не только при train)"
+        img_np = np.array(img)
+        img_np = self.clahe.apply(img_np)
+        img = Image.fromarray(img_np)
 
         "Аугментации Albumentations при train"
         if self.mode == 'train':

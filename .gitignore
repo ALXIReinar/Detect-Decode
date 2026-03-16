@@ -176,4 +176,4 @@ ml/local_wheels/
 s3_samples/
 .env*
 1.py
-
+!dataset/iam-words/charset.txt
