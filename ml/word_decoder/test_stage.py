@@ -7,6 +7,7 @@ from tqdm import tqdm
 
 from ml.config import env, WORKDIR
 from ml.logger_config import log_event
+from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions, calculate_cer, calculate_wer, calculate_accuracy
 from ml.word_decoder.models import CRNNWordDecoder
@@ -32,6 +33,7 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
         prefetch_factor=prefetch_factor
     )
 
+
     "Выгружаем Параметры модели"
     weights_path = Path(weights_path)
     if not weights_path.exists():
@@ -42,9 +44,10 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
     model_params = torch.load(weights_path, weights_only=False, map_location=env.device)
 
     model_inner_params = model_params['model_params']
-    hidden_size, num_lstm_layers = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers']
+    beam_size = model_params.get('beam_search_decoder_size', 10)
+    hidden_size, num_lstm_layers, charset = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers'], model_params['charset']
 
-    model = CRNNWordDecoder(len(test_dset.charset), hidden_size=hidden_size, num_lstm_layers=num_lstm_layers)
+    model = CRNNWordDecoder(len(charset), hidden_size=hidden_size, num_lstm_layers=num_lstm_layers)
     model.to(env.device)
 
     "Загружаем веса"
@@ -55,37 +58,44 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
 
     "Некоторые гиперпараметры"
     loss_func = nn.CTCLoss(blank=0, zero_infinity=True, reduction='mean')
+    beam_search_decoder = BeamSearchDecoder(
+        tokens=charset,
+        beam_size=beam_size,
+        nbest=1,
+        use_cuda=True
+    )
 
     model.eval()
     with torch.no_grad():
         list_test_loss = []
-    
+
         all_predictions = []
         all_targets = []
-    
+
         test_loop = tqdm(test_loader, leave=False, desc=f'Testing')
         for images, targets, images_widths, target_lengths in test_loop:
-    
+
             images = images.to(env.device, non_blocking=True)
             targets_gpu = targets.to(env.device, non_blocking=True)
             images_widths = images_widths.to(env.device, non_blocking=True)
             target_lengths_gpu = target_lengths.to(env.device, non_blocking=True)
-    
+
             "Forward"
             log_probs = model(images)  # [seq_len, batch, num_classes]
             log_probs_softmax = torch.nn.functional.log_softmax(log_probs, dim=2)
-    
+
             input_lengths = torch.clamp(images_widths, min=target_lengths.max().item())
 
             "Loss"
             loss = loss_func(log_probs_softmax, targets_gpu, input_lengths, target_lengths_gpu)
-    
+
             list_test_loss.append(loss.item())
-    
+            log_probs_for_beam = log_probs_softmax.transpose(0, 1).contiguous()
+
             "Декодируем предсказания для метрик"
-            predictions = decode_predictions(log_probs, test_dset, blank_idx=0)
+            predictions = beam_search_decoder.decode(log_probs_for_beam, lengths=input_lengths)
             all_predictions.extend(predictions)
-    
+
             "Декодируем целевые тексты"
             targets_cpu = targets.cpu()
             target_lengths_cpu = target_lengths.cpu()
@@ -95,9 +105,9 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
                 target_text = test_dset.indices_to_text(target_indices)
                 all_targets.append(target_text)
                 start_idx += length
-    
+
             test_loop.set_postfix({'loss': f'{loss.item():.4f}'})
-    
+
 
     "Метрики"
     cer = calculate_cer(all_predictions, all_targets)

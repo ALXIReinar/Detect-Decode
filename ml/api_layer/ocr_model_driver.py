@@ -11,17 +11,26 @@ from ml.config import env
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
 from ml.detector.models import WordDetector
 from ml.env_modes import AppMode
-from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions
 from ml.word_decoder.models import CRNNWordDecoder
+from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
+from ml.word_decoder.spell_checker import SpellChecker
 
 
 class CRNNModel:
-    def __init__(self, weights_path: Path):
-        self.img_height: None | int = None
+    def __init__(self, weights_path: Path, use_beam_search: bool = False):
+        """
+        Args:
+            weights_path: путь к весам CRNN модели
+            use_beam_search: использовать beam search decoder вместо greedy (default: False)
+        """
+        self.img_height = None
         self.charset = None
+        self.beam_size = None
+
+        self.use_beam_search = use_beam_search
         
         "Загружаем модель"
         self.model = self.init_model(weights_path)
@@ -33,24 +42,55 @@ class CRNNModel:
         if self.charset is None:
             raise ValueError('CRNN weights must include charset!!!')
 
+        if self.beam_size is None:
+            raise ValueError('CRNN weights must include beam_size!!!')
+
         "Для доступа к специфичным методам (idx2char) и трансформации"
-        log_event(f'Выгрузка модели | Charset: \033[35m{len(self.charset)}\033[0m, img_height: \033[34m{self.img_height}\033[0m, Charset_slice: \033[33m{self.charset[:7]}\033[0m', level='WARNING')
+        log_event(f'Выгрузка модели | Charset: \033[35m{len(self.charset)}\033[0m, img_height: \033[34m{self.img_height}\033[0m,  Beam Size: \033[31m{self.beam_size}\033[0m Charset_slice: \033[33m{self.charset[:7]}\033[0m', level='WARNING')
         self.dataset_obj = CRNNWordDataset(
             path='', charset_path=self.charset,img_height=self.img_height,transform='test', auto_load=False
         )
+        
+        "Инициализация beam search decoder (опционально)"
+        if self.use_beam_search:
+            self.beam_search_decoder = BeamSearchDecoder(
+                tokens=self.charset,
+                beam_size=self.beam_size,
+                nbest=1,
+                use_cuda=True  # Используем CUDA если доступен
+            )
+            log_event(f'\033[34mBeam search decoder\033[0m | type=\033[31m{self.beam_search_decoder.decoder_type}\033[0m', level='WARNING')
+        else:
+            self.beam_search_decoder = None
 
 
     def init_model(self, weights_path: Path):
         model_hyperparams = torch.load(weights_path, map_location=env.device, weights_only=False)
         self.img_height = model_hyperparams['img_height']
         self.charset = model_hyperparams['charset']
+        self.beam_size = model_hyperparams.get('beam_size', 10)
 
         model_inner_params = model_hyperparams['model_params']
         hidden_size, num_lstm_layers = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers']
         num_classes, lstm_dropout = model_inner_params['num_classes'], model_inner_params['lstm_dropout']
+        
+        # Backward compatibility: старые веса не имеют use_feature_compressor
+        use_feature_compressor = model_inner_params.get('use_feature_compressor', False)
+        compressor_output_size = model_inner_params.get('compressor_output_size', 512)
 
-        model = CRNNWordDecoder(num_classes, hidden_size, num_lstm_layers, lstm_dropout).to(env.device)
+        model = CRNNWordDecoder(
+            num_classes, hidden_size, num_lstm_layers, lstm_dropout,
+            use_feature_compressor=use_feature_compressor,
+            compressor_output_size=compressor_output_size
+        ).to(env.device)
         model.load_state_dict(model_hyperparams['state_model'])
+        
+        # Логируем архитектуру
+        if use_feature_compressor:
+            log_event(f'Архитектура: \033[32mOptimized\033[0m (feature_compressor: 2048 → {compressor_output_size})', level='WARNING')
+        else:
+            log_event(f'Архитектура: \033[33mLegacy\033[0m (BiLSTM input_size=2048)', level='WARNING')
+        
         return model
 
 
@@ -117,7 +157,9 @@ class OCRModel:
             self,
             detector_weights_path: Path, word_decoder_weights_path: Path,
             conf_thres: float = 0.25, iou_thres: float = 0.45, max_det: int = 600,
-            vertical_padding_ratio: float = 0.05
+            vertical_padding_ratio: float = 0.05,
+            use_beam_search: bool = False,
+            use_spell_checker: bool = False, vocabulary_path: Path | str | None = None
     ):
         """
         Инициализация OCR модели.
@@ -129,10 +171,13 @@ class OCRModel:
             iou_thres: порог IoU для NMS (default: 0.45)
             max_det: максимальное количество детекций (default: 600)
             vertical_padding_ratio: процент расширения bbox по вертикали (default: 0.05 = 5%)
+            use_beam_search: использовать beam search decoder вместо greedy (default: False)
+            use_spell_checker: использовать spell checker для коррекции слов (default: False)
+            vocabulary_path: путь к словарю для spell checker (default: None = auto)
         """
         self.detector = DetectorModel(detector_weights_path)
-        self.word_decoder = CRNNModel(word_decoder_weights_path)
-        
+        self.word_decoder = CRNNModel(word_decoder_weights_path, use_beam_search=use_beam_search)
+
         # Параметры NMS для детектора
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
@@ -140,6 +185,25 @@ class OCRModel:
         
         # Параметр адаптивного расширения bbox
         self.vertical_padding_ratio = vertical_padding_ratio
+        
+        # Spell checker (опционально)
+        self.use_spell_checker = use_spell_checker
+        if use_spell_checker:
+            if vocabulary_path is None:
+                # Автоматически определяем путь к словарю
+                from ml.config import WORKDIR
+                vocabulary_path = WORKDIR / 'ml' / 'word_decoder' / 'vocabulary.json'
+            
+            self.spell_checker = SpellChecker(
+                vocabulary_path=vocabulary_path,
+                confidence_threshold=0.7,
+                max_edit_distance=2,
+                min_word_length=3
+            )
+            stats = self.spell_checker.get_stats()
+            log_event(f'\033[32mSpell checker\033[0m | vocabulary_size=\033[33m{stats["vocabulary_size"]}\033[0m', level='WARNING')
+        else:
+            self.spell_checker = None
 
     
     def _crop_word(
@@ -385,14 +449,37 @@ class OCRModel:
                 if return_raw:
                     all_log_probs.append(logits)
                 
-                # CTC декодирование (greedy decode)
-                predictions = decode_predictions(logits, self.word_decoder.dataset_obj, blank_idx=0)
+                # CTC декодирование (beam search или greedy)
+                if self.word_decoder.use_beam_search:
+                    # Beam search декодирование
+                    log_probs = torch.nn.functional.log_softmax(logits, dim=2)  # [seq_len, batch, num_classes]
+                    log_probs_for_beam = log_probs.transpose(0, 1).contiguous()  # [batch, seq_len, num_classes]
+                    
+                    # Вычисляем lengths для каждого изображения в батче
+                    # lengths = ширина изображения / stride модели (примерно seq_len)
+                    batch_lengths = torch.full((len(batch),), log_probs.shape[0], dtype=torch.int32, device=env.device)
+                    
+                    predictions = self.word_decoder.beam_search_decoder.decode(log_probs_for_beam, lengths=batch_lengths)
+                else:
+                    # Greedy декодирование (baseline)
+                    predictions = decode_predictions(logits, self.word_decoder.dataset_obj, blank_idx=0)
+                
                 all_predictions.extend(predictions)
         
         # Восстанавливаем исходный порядок
         original_order_predictions = [''] * len(word_imgs)
         for i, pred in zip(sorted_indices, all_predictions):
             original_order_predictions[i] = pred
+        
+        # Применяем spell checker (если включён)
+        if self.use_spell_checker and self.spell_checker is not None:
+            corrected_predictions = []
+            for pred in original_order_predictions:
+                # Корректируем каждое слово
+                # TODO: можно добавить confidence для каждого слова
+                corrected = self.spell_checker.correct_word(pred, confidence=None)
+                corrected_predictions.append(corrected)
+            original_order_predictions = corrected_predictions
 
         if return_raw:
             return original_order_predictions, all_log_probs

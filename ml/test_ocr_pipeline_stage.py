@@ -33,7 +33,12 @@ def test_run(detector_weights_path: Path | str, word_decoder_weights_path: Path,
         raise FileNotFoundError(f"Файл с весами Ворд Декодера не найден: {word_decoder_weights_path}")
 
     conf_thres, iou_thres, max_dets, vertical_padd_ratio = 0.25, 0.45, env.max_det, 0.02
-    model = OCRModel(detector_weights_path, word_decoder_weights_path, conf_thres, iou_thres, max_dets, vertical_padd_ratio)
+    model = OCRModel(
+        detector_weights_path, word_decoder_weights_path, 
+        conf_thres, iou_thres, max_dets, vertical_padd_ratio, 
+        use_beam_search=True,
+        use_spell_checker=True  # Включаем spell checker
+    )
 
     # Загружаем тестовый датасет
     test_dset = OCRPipelineDataset(

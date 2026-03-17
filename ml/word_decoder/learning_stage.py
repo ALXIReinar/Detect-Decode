@@ -17,6 +17,7 @@ from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.models import CRNNWordDecoder, model_word_decoder_code
 from ml.word_decoder.metrics import calculate_cer, calculate_wer, decode_predictions, calculate_accuracy
 from ml.word_decoder.utils import plot_lr_chronology, plot_loss_dynamics, plot_metrics_dynamics
+from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
 
 
 # ======================================================================================================================
@@ -63,6 +64,14 @@ def train_run():
         prefetch_factor=prefetch_factor,
         drop_last=True
     )
+    beam_size = 10
+    beam_search_decoder = BeamSearchDecoder(
+        tokens=train_dset.charset,
+        beam_size=10,
+        nbest=1,
+        use_cuda=True
+    )
+    log_event(f'Beam search decoder инициализирован | beam_size={beam_size} | type=\033[31m{beam_search_decoder.decoder_type}\033[0m', level='WARNING')
 
 
 # ======================================================================================================================
@@ -77,7 +86,11 @@ def train_run():
     pretrained_backbone = True
     num_classes = len(train_dset.charset)
 
-    model = CRNNWordDecoder(num_classes, hidden_size, lstm_layers, lstm_dropout, pretrained_backbone).to(env.device)
+    model = CRNNWordDecoder(
+        num_classes, hidden_size, lstm_layers, lstm_dropout, pretrained_backbone,
+        use_feature_compressor=True,  # Новая архитектура с Linear слоем
+        compressor_output_size=512
+    ).to(env.device)
 
     "Unfreeze backbone стратегия"
     unfreeze_backbone = True
@@ -107,7 +120,7 @@ def train_run():
         max_lr=5e-4,
         epochs=epochs,
         steps_per_epoch=steps_per_epoch,
-        pct_start=0.3,  # 30% эпох на разогрев
+        pct_start=0.35,  # 35% эпох на разогрев
         anneal_strategy='cos'
     )
     # lr_sched = ReduceLROnPlateau(
@@ -172,7 +185,6 @@ def train_run():
             log_probs = model(images)  # [seq_len, batch, num_classes]
             log_probs = torch.nn.functional.log_softmax(log_probs, dim=2)
 
-            # ни один input_length не стал меньше target_length?
             input_lengths = torch.max(input_lengths, target_lengths)
 
             "Loss"
@@ -247,11 +259,24 @@ def train_run():
 
                 list_val_loss.append(loss.item())
 
-                "Декодируем предсказания для метрик"
-                predictions = decode_predictions(log_probs, val_dset, blank_idx=0)
+                "Декодируем предсказания для метрик (BEAM SEARCH)"
+                # Применяем log_softmax для beam search (уже применён выше для loss)
+                # log_probs_softmax уже содержит log probabilities
+                
+                # Beam search decoder требует [batch, time, num_classes]
+                # У нас log_probs_softmax: [seq_len, batch, num_classes]
+                log_probs_for_beam = log_probs_softmax.transpose(0, 1).contiguous()  # [batch, seq_len, num_classes]
+                
+                "Beam Search Decode"
+                predictions = beam_search_decoder.decode(log_probs_for_beam, lengths=input_lengths)
+                
                 # Проверка
                 if len(predictions) != images.shape[0]:
-                    print(f"Ошибка! Предсказаний: {len(predictions)}, картинок в батче: {images.shape[0]}")
+                    print(f"⚠️  Ошибка! Предсказаний: {len(predictions)}, картинок в батче: {images.shape[0]}")
+                    print(f"   log_probs_for_beam.shape: {log_probs_for_beam.shape}")
+                    print(f"   input_lengths: {input_lengths}")
+                    # Обрезаем до правильного размера
+                    predictions = predictions[:images.shape[0]]
 
                 all_predictions.extend(predictions)
 
@@ -322,7 +347,9 @@ def train_run():
                     'num_classes': num_classes,
                     'hidden_size': hidden_size,
                     'num_lstm_layers': lstm_layers,
-                    'lstm_dropout': lstm_dropout
+                    'lstm_dropout': lstm_dropout,
+                    'use_feature_compressor': True,
+                    'compressor_output_size': 512,
                 },
                 'state_model': model.state_dict(),
                 'state_opt': opt.state_dict(),
@@ -332,6 +359,7 @@ def train_run():
                 'charset': train_dset.charset,
                 'pretrained_backbone': pretrained_backbone,
                 'img_height': img_height,
+                'beam_search_decoder_size': beam_size,
             }
             "Попытка сохранить веса"
             save_path = models_dir.joinpath(f'model_epoch{epoch}.pth')
@@ -344,7 +372,7 @@ def train_run():
                     os.rename(tmp_file, save_path)
                     log_event(f"Успешно сохранено: {save_path} ({os.path.getsize(save_path) / 1e6:.2f} MB)")
                 else:
-                    log_event(f"ОШИБКА: Файл {tmp_file} пуст!", level='ERROR')
+                    log_event(f"Файл {tmp_file} пуст!", level='ERROR')
             except Exception as e:
                 log_event(f"Критическая ошибка при сохранении: {e}", level='CRITICAL')
 

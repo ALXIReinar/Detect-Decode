@@ -59,14 +59,13 @@ class CRNNWordAugment(nn.Module):
         super().__init__()
         self.mode = mode
         self.img_height = img_height
-        
-        # CLAHE для улучшения контраста
-        self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) # применяется всегда
 
         "Аугментации для обучения"
         if mode == 'train':
             # Albumentations работают с numpy (H, W, C)
             self.alb_aug = A.Compose([
+                # Имитация низкого разрешения (сжатие + upscale с артефактами)
+                A.Downscale(scale_range=(0.25, 0.5), p=0.3),
                 A.ElasticTransform(alpha=1, sigma=50, p=0.3),
                 A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.3),
                 A.ShiftScaleRotate(
@@ -86,8 +85,12 @@ class CRNNWordAugment(nn.Module):
         w, h = img.size
         new_w = max(16, min(int(self.img_height * (w / h)), 512))
         img = img.resize((new_w, self.img_height), Image.Resampling.BILINEAR)
-        
+
+
         "Применяем CLAHE для улучшения контраста (всегда, не только при train)"
+        # Ленивая инициализация, чтобы не пересоздавать объект каждый forward. Необходимо для share между воркерами-процессами
+        if not hasattr(self, 'clahe'):
+            self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         img_np = np.array(img)
         img_np = self.clahe.apply(img_np)
         img = Image.fromarray(img_np)
