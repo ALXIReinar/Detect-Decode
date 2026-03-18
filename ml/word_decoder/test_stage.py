@@ -9,6 +9,7 @@ from ml.config import env, WORKDIR
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
+from ml.word_decoder.dataset_class.spell_checker import SpellChecker
 from ml.word_decoder.metrics import decode_predictions, calculate_cer, calculate_wer, calculate_accuracy
 from ml.word_decoder.models import CRNNWordDecoder
 from ml.word_decoder.utils import parse_args
@@ -45,9 +46,16 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
 
     model_inner_params = model_params['model_params']
     beam_size = model_params.get('beam_search_decoder_size', 10)
-    hidden_size, num_lstm_layers, charset = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers'], model_params['charset']
+    hidden_size, num_lstm_layers, lstm_dropout = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers'], model_inner_params['lstm_dropout']
+    charset, use_feature_compressor = model_params['charset'], model_inner_params.get('use_feature_compressor', False),
 
-    model = CRNNWordDecoder(len(charset), hidden_size=hidden_size, num_lstm_layers=num_lstm_layers)
+    model = CRNNWordDecoder(
+        len(charset),
+        hidden_size=hidden_size,
+        num_lstm_layers=num_lstm_layers,
+        lstm_dropout=lstm_dropout,
+        use_feature_compressor=use_feature_compressor,
+    )
     model.to(env.device)
 
     "Загружаем веса"
@@ -64,7 +72,14 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
         nbest=1,
         use_cuda=True
     )
+    use_spell_checker = False
+    spell_checker = SpellChecker(
+        vocabulary_path=WORKDIR / 'ml' / 'word_decoder' / 'model_weights' / 'vocabulary.json',
+        max_edit_distance=2,
+        min_word_length=3
+    )
 
+    log_event(f'Начали Тестирование модели. Spell Checker status: \033[31m{use_spell_checker}\033[0m')
     model.eval()
     with torch.no_grad():
         list_test_loss = []
@@ -110,6 +125,8 @@ def test_run(weights_path: Path, batch_size: int = 64, img_height: int = 64, wor
 
 
     "Метрики"
+    if use_spell_checker:
+        all_predictions = spell_checker.correct_text(all_predictions)
     cer = calculate_cer(all_predictions, all_targets)
     wer = calculate_wer(all_predictions, all_targets)
     acc = calculate_accuracy(all_predictions, all_targets)

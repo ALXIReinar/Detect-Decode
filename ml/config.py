@@ -42,9 +42,12 @@ class Settings(BaseSettings):
     device: str = 'cuda' if cuda.is_available() else 'cpu'    
     detector_weights_path: Path
     word_decoder_weights_path: Path
+    vocabulary_path: Path
+
     detector_weights_path_docker: Path
     word_decoder_weights_path_docker: Path
-    
+    vocabulary_path_docker: Path
+
     kafka_host: str
     kafka_port: int
     kafka_host_docker: str

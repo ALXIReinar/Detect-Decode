@@ -33,11 +33,13 @@ def test_run(detector_weights_path: Path | str, word_decoder_weights_path: Path,
         raise FileNotFoundError(f"Файл с весами Ворд Декодера не найден: {word_decoder_weights_path}")
 
     conf_thres, iou_thres, max_dets, vertical_padd_ratio = 0.25, 0.45, env.max_det, 0.02
+    use_spell_checker, use_beam_search = False, True
     model = OCRModel(
         detector_weights_path, word_decoder_weights_path, 
         conf_thres, iou_thres, max_dets, vertical_padd_ratio, 
-        use_beam_search=True,
-        use_spell_checker=True  # Включаем spell checker
+        use_beam_search=use_beam_search,
+        use_spell_checker=use_spell_checker,
+        vocabulary_path=env.vocabulary_path,
     )
 
     # Загружаем тестовый датасет
@@ -66,7 +68,7 @@ def test_run(detector_weights_path: Path | str, word_decoder_weights_path: Path,
     detector_stats = []  # Статистики детектора для mAP
     iouv = torch.linspace(0.5, 0.95, 10).to(env.device)
 
-    log_event(f'Началось тестирование OCR пайплайна | Семплов: \033[32m{len(test_dset)}\033[0m', level='WARNING')
+    log_event(f'Началось тестирование OCR пайплайна | Семплов: \033[32m{len(test_dset)}\033[0m; Spell checker: \033[33m{use_spell_checker}\033[0m; Beam Search: \033[35m{use_beam_search}\033[0m', level='WARNING')
     
     test_loop = tqdm(test_loader, leave=False, desc='Testing OCR Pipeline')
     for batch_data in test_loop:
@@ -238,7 +240,7 @@ def test_run(detector_weights_path: Path | str, word_decoder_weights_path: Path,
 if __name__ == '__main__':
     # Пример запуска
     detector_weights = WORKDIR / 'ml/detector/model_weights/production_weights/model_detector47.pth'
-    word_decoder_weights = WORKDIR / 'ml/word_decoder/model_weights/2026-03-03_07-45_prod/prod_weights.pth'
+    word_decoder_weights = WORKDIR / 'ml/word_decoder/model_weights/prod_weights_v2/model_epoch50.pt'
     
     results = test_run(
         detector_weights_path=detector_weights,

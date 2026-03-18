@@ -169,3 +169,4 @@ secrets/
 **/20260224-140720
 **/model_epoch38_post_unfreeze_lay2.pth
 **/model_epoch42_unfreeze_lay1.pth
+**/vocabulary.json

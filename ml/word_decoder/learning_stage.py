@@ -69,7 +69,7 @@ def train_run():
         tokens=train_dset.charset,
         beam_size=10,
         nbest=1,
-        use_cuda=True
+        use_cuda=True,
     )
     log_event(f'Beam search decoder инициализирован | beam_size={beam_size} | type=\033[31m{beam_search_decoder.decoder_type}\033[0m', level='WARNING')
 
@@ -80,16 +80,17 @@ def train_run():
 
     epochs = 55
 
-    hidden_size = 256
+    hidden_size, compressor_output_size = 256, 512
     lstm_layers = 3
     lstm_dropout = 0.57
     pretrained_backbone = True
+    use_feature_compressor = True
     num_classes = len(train_dset.charset)
 
     model = CRNNWordDecoder(
         num_classes, hidden_size, lstm_layers, lstm_dropout, pretrained_backbone,
-        use_feature_compressor=True,  # Новая архитектура с Linear слоем
-        compressor_output_size=512
+        use_feature_compressor=use_feature_compressor,
+        compressor_output_size=compressor_output_size,
     ).to(env.device)
 
     "Unfreeze backbone стратегия"
@@ -272,9 +273,9 @@ def train_run():
                 
                 # Проверка
                 if len(predictions) != images.shape[0]:
-                    print(f"⚠️  Ошибка! Предсказаний: {len(predictions)}, картинок в батче: {images.shape[0]}")
-                    print(f"   log_probs_for_beam.shape: {log_probs_for_beam.shape}")
-                    print(f"   input_lengths: {input_lengths}")
+                    print(f"⚠️ Ошибка! Предсказаний: {len(predictions)}, картинок в батче: {images.shape[0]}")
+                    print(f"log_probs_for_beam.shape: {log_probs_for_beam.shape}")
+                    print(f"input_lengths: {input_lengths}")
                     # Обрезаем до правильного размера
                     predictions = predictions[:images.shape[0]]
 
@@ -348,8 +349,8 @@ def train_run():
                     'hidden_size': hidden_size,
                     'num_lstm_layers': lstm_layers,
                     'lstm_dropout': lstm_dropout,
-                    'use_feature_compressor': True,
-                    'compressor_output_size': 512,
+                    'use_feature_compressor': use_feature_compressor,
+                    'compressor_output_size': compressor_output_size,
                 },
                 'state_model': model.state_dict(),
                 'state_opt': opt.state_dict(),
@@ -362,7 +363,7 @@ def train_run():
                 'beam_search_decoder_size': beam_size,
             }
             "Попытка сохранить веса"
-            save_path = models_dir.joinpath(f'model_epoch{epoch}.pth')
+            save_path = models_dir.joinpath(f'model_epoch{epoch}.pt')
             try:
                 tmp_file = models_dir.joinpath(f'model_epoch{epoch}.tmp')
                 torch.save(checkpoint, save_path)

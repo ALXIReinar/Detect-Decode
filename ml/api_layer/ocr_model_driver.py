@@ -16,7 +16,7 @@ from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions
 from ml.word_decoder.models import CRNNWordDecoder
 from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
-from ml.word_decoder.spell_checker import SpellChecker
+from ml.word_decoder.dataset_class.spell_checker import SpellChecker
 
 
 class CRNNModel:
@@ -173,7 +173,7 @@ class OCRModel:
             vertical_padding_ratio: процент расширения bbox по вертикали (default: 0.05 = 5%)
             use_beam_search: использовать beam search decoder вместо greedy (default: False)
             use_spell_checker: использовать spell checker для коррекции слов (default: False)
-            vocabulary_path: путь к словарю для spell checker (default: None = auto)
+            vocabulary_path: путь к словарю для spell checker (default: None)
         """
         self.detector = DetectorModel(detector_weights_path)
         self.word_decoder = CRNNModel(word_decoder_weights_path, use_beam_search=use_beam_search)
@@ -183,25 +183,19 @@ class OCRModel:
         self.iou_thres = iou_thres
         self.max_det = max_det
         
-        # Параметр адаптивного расширения bbox
+        "Adaptive Padding Bbox"
         self.vertical_padding_ratio = vertical_padding_ratio
         
-        # Spell checker (опционально)
+        "Manual Spell checker"
         self.use_spell_checker = use_spell_checker
         if use_spell_checker:
-            if vocabulary_path is None:
-                # Автоматически определяем путь к словарю
-                from ml.config import WORKDIR
-                vocabulary_path = WORKDIR / 'ml' / 'word_decoder' / 'vocabulary.json'
-            
             self.spell_checker = SpellChecker(
                 vocabulary_path=vocabulary_path,
-                confidence_threshold=0.7,
                 max_edit_distance=2,
                 min_word_length=3
             )
-            stats = self.spell_checker.get_stats()
-            log_event(f'\033[32mSpell checker\033[0m | vocabulary_size=\033[33m{stats["vocabulary_size"]}\033[0m', level='WARNING')
+            vocabulary_size = len(self.spell_checker.vocabulary)
+            log_event(f'\033[32mManual Spell checker\033[0m | vocabulary_size=\033[33m{vocabulary_size}\033[0m', level='WARNING')
         else:
             self.spell_checker = None
 
@@ -232,7 +226,7 @@ class OCRModel:
         # Вычисляем высоту bbox
         bbox_height = y2 - y1
         
-        # Адаптивное вертикальное расширение (5-7% от высоты)
+        # Адаптивное вертикальное расширение (2-5% от высоты)
         v_padding = int(bbox_height * self.vertical_padding_ratio)
         
         # Применяем расширение с проверкой границ изображения
@@ -359,11 +353,9 @@ class OCRModel:
         
         # Добавляем последнюю строку
         lines.append(" ".join(current_line))
-        
-        # Склеиваем строки
-        full_text = "\n".join(lines)
-        
-        return full_text
+
+        # Отдаём весь текст
+        return  "\n".join(lines)
 
     def _recognize_words_batch(self, word_imgs: list[Image.Image], batch_size: int = 32, return_raw: bool = False):
         """
@@ -449,7 +441,7 @@ class OCRModel:
                 if return_raw:
                     all_log_probs.append(logits)
                 
-                # CTC декодирование (beam search или greedy)
+                # CTC декодирование
                 if self.word_decoder.use_beam_search:
                     # Beam search декодирование
                     log_probs = torch.nn.functional.log_softmax(logits, dim=2)  # [seq_len, batch, num_classes]
@@ -473,13 +465,7 @@ class OCRModel:
         
         # Применяем spell checker (если включён)
         if self.use_spell_checker and self.spell_checker is not None:
-            corrected_predictions = []
-            for pred in original_order_predictions:
-                # Корректируем каждое слово
-                # TODO: можно добавить confidence для каждого слова
-                corrected = self.spell_checker.correct_word(pred, confidence=None)
-                corrected_predictions.append(corrected)
-            original_order_predictions = corrected_predictions
+            original_order_predictions = self.spell_checker.correct_text(original_order_predictions)
 
         if return_raw:
             return original_order_predictions, all_log_probs
