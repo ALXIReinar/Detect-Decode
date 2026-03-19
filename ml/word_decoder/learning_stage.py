@@ -37,7 +37,7 @@ def train_run():
     dataload_workers = 6
     prefetch_factor = 2
     img_height = 64
-    
+    padding_value = 0.0
 
     base_dataset_path = WORKDIR / 'dataset' / 'iam-words'
     train_dset = CRNNWordDataset(base_dataset_path / 'train', base_dataset_path / 'charset.txt', img_height, 'train')
@@ -351,6 +351,7 @@ def train_run():
                     'lstm_dropout': lstm_dropout,
                     'use_feature_compressor': use_feature_compressor,
                     'compressor_output_size': compressor_output_size,
+                    'padding_value': padding_value,
                 },
                 'state_model': model.state_dict(),
                 'state_opt': opt.state_dict(),

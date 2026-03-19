@@ -9,7 +9,6 @@ from ml.config import env, WORKDIR
 from ml.logger_config import log_event
 from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
 from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
-from ml.word_decoder.dataset_class.spell_checker import SpellChecker
 from ml.word_decoder.metrics import decode_predictions, calculate_cer, calculate_wer, calculate_accuracy
 from ml.word_decoder.models import CRNNWordDecoder
 from ml.word_decoder.utils import parse_args

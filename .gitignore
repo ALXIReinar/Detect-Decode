@@ -163,6 +163,7 @@ secrets/
 dataset/
 *deprecated/
 *.pth
+*.pt
 .kiro/
 ml_docs/
 visualizations/
@@ -177,4 +178,4 @@ s3_samples/
 .env*
 1.py
 !dataset/iam-words/charset.txt
-model_weigths/
+vocabulary.json

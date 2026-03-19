@@ -1,9 +1,11 @@
+from importlib import resources
 from pathlib import Path
 
 import numpy as np
 import torch
 from PIL import Image
 import torch.nn.functional as F
+from symspellpy import Verbosity, SymSpell
 from ultralytics.utils.nms import non_max_suppression
 
 from ml.api_layer.utils import save_word_crop
@@ -16,7 +18,6 @@ from ml.word_decoder.dataset_class.dataclass_word_decoder import CRNNWordDataset
 from ml.word_decoder.metrics import decode_predictions
 from ml.word_decoder.models import CRNNWordDecoder
 from ml.word_decoder.dataset_class.beam_search_decoder import BeamSearchDecoder
-from ml.word_decoder.dataset_class.spell_checker import SpellChecker
 
 
 class CRNNModel:
@@ -26,6 +27,7 @@ class CRNNModel:
             weights_path: путь к весам CRNN модели
             use_beam_search: использовать beam search decoder вместо greedy (default: False)
         """
+        self.padding_value = None
         self.img_height = None
         self.charset = None
         self.beam_size = None
@@ -44,6 +46,9 @@ class CRNNModel:
 
         if self.beam_size is None:
             raise ValueError('CRNN weights must include beam_size!!!')
+
+        if self.padding_value is None:
+            raise ValueError('CRNN weights must include padding_value!!!')
 
         "Для доступа к специфичным методам (idx2char) и трансформации"
         log_event(f'Выгрузка модели | Charset: \033[35m{len(self.charset)}\033[0m, img_height: \033[34m{self.img_height}\033[0m,  Beam Size: \033[31m{self.beam_size}\033[0m Charset_slice: \033[33m{self.charset[:7]}\033[0m', level='WARNING')
@@ -66,14 +71,16 @@ class CRNNModel:
 
     def init_model(self, weights_path: Path):
         model_hyperparams = torch.load(weights_path, map_location=env.device, weights_only=False)
+        model_inner_params = model_hyperparams['model_params']
+
         self.img_height = model_hyperparams['img_height']
         self.charset = model_hyperparams['charset']
         self.beam_size = model_hyperparams.get('beam_size', 10)
+        self.padding_value = model_inner_params.get('padding_value', 1.0)
 
-        model_inner_params = model_hyperparams['model_params']
         hidden_size, num_lstm_layers = model_inner_params['hidden_size'], model_inner_params['num_lstm_layers']
         num_classes, lstm_dropout = model_inner_params['num_classes'], model_inner_params['lstm_dropout']
-        
+
         # Backward compatibility: старые веса не имеют use_feature_compressor
         use_feature_compressor = model_inner_params.get('use_feature_compressor', False)
         compressor_output_size = model_inner_params.get('compressor_output_size', 512)
@@ -159,7 +166,7 @@ class OCRModel:
             conf_thres: float = 0.25, iou_thres: float = 0.45, max_det: int = 600,
             vertical_padding_ratio: float = 0.05,
             use_beam_search: bool = False,
-            use_spell_checker: bool = False, vocabulary_path: Path | str | None = None
+            use_sym_spell: bool = True, word_confidence_threshold: float = 0.7, max_edit_distance: int = 2,
     ):
         """
         Инициализация OCR модели.
@@ -172,9 +179,9 @@ class OCRModel:
             max_det: максимальное количество детекций (default: 600)
             vertical_padding_ratio: процент расширения bbox по вертикали (default: 0.05 = 5%)
             use_beam_search: использовать beam search decoder вместо greedy (default: False)
-            use_spell_checker: использовать spell checker для коррекции слов (default: False)
-            vocabulary_path: путь к словарю для spell checker (default: None)
+            use_sym_spell: использовать symspellpy для коррекции слов (default: True)
         """
+        "Модели"
         self.detector = DetectorModel(detector_weights_path)
         self.word_decoder = CRNNModel(word_decoder_weights_path, use_beam_search=use_beam_search)
 
@@ -182,24 +189,119 @@ class OCRModel:
         self.conf_thres = conf_thres
         self.iou_thres = iou_thres
         self.max_det = max_det
-        
-        "Adaptive Padding Bbox"
-        self.vertical_padding_ratio = vertical_padding_ratio
-        
-        "Manual Spell checker"
-        self.use_spell_checker = use_spell_checker
-        if use_spell_checker:
-            self.spell_checker = SpellChecker(
-                vocabulary_path=vocabulary_path,
-                max_edit_distance=2,
-                min_word_length=3
-            )
-            vocabulary_size = len(self.spell_checker.vocabulary)
-            log_event(f'\033[32mManual Spell checker\033[0m | vocabulary_size=\033[33m{vocabulary_size}\033[0m', level='WARNING')
-        else:
-            self.spell_checker = None
 
-    
+        # Adaptive Padding Bbox
+        self.vertical_padding_ratio = vertical_padding_ratio
+
+        "Параметры для SymSpell"
+        self.use_sym_spell = use_sym_spell
+        if use_sym_spell:
+            self.sym_spell = SymSpell(max_dictionary_edit_distance=max_edit_distance, prefix_length=7)
+            self.word_conf_thres = word_confidence_threshold
+            self.max_edit_distance = max_edit_distance
+
+            "Загружаем встроенный словарь (82k английских слов с частотностью)"
+            dictionary_path = resources.files("symspellpy") / "frequency_dictionary_en_82_765.txt"
+            if not self.sym_spell.load_dictionary(str(dictionary_path), term_index=0, count_index=1):
+                raise FileNotFoundError('Файл частотности слов (frequency_dictionary_en_82_765.txt) для symspellpy checker не найден')
+            "Файл биграмм"
+            # bigram_path = importlib.resources.files("symspellpy") / "frequency_bigramdictionary_en_243_342.txt"
+
+            log_event(f"Используется \033[36mSymSpellPy Checker\033[0m | vocabulary_words: \033[33m{len(self.sym_spell.words)}\033[0m", level='WARNING')
+        else:
+            self.sym_spell = None
+
+
+
+    def correct_words_data(self, words_data: list[str], confidences: list[float]):
+        """
+        Корректирует слова с использованием SymSpell с учётом confidence.
+        
+        Args:
+            words_data: список слов для коррекции
+            confidences: список confidence для каждого слова
+            
+        Returns:
+            список скорректированных слов
+        """
+        corrections_count = 0
+        skipped_high_conf = 0
+        skipped_short = 0
+        no_suggestions = 0
+        same_word = 0
+        low_conf_not_corrected = []  # Слова с низкой confidence которые не были скорректированы
+        
+        for i, (word, conf) in enumerate(zip(words_data, confidences)):
+            # Если word_decoder очень уверен, отдаём без корректировок
+            if conf > self.word_conf_thres:
+                skipped_high_conf += 1
+                continue
+
+            # Если слово - просто цифры или очень короткое, тоже можно пропустить
+            if not word.isalpha() or len(word) < 2:
+                skipped_short += 1
+                continue
+
+            # Ищем предложения по исправлению слов
+            suggestions = self.sym_spell.lookup(
+                word.lower(),
+                Verbosity.CLOSEST,
+                max_edit_distance=self.max_edit_distance
+            )
+
+            if not suggestions:
+                no_suggestions += 1
+                if conf < 0.7:  # Низкая confidence но нет suggestions
+                    low_conf_not_corrected.append((word, conf, 'no_suggestions'))
+                continue
+            
+            # Берем лучший вариант
+            best_guess = suggestions[0].term
+            
+            # Проверяем что это действительно коррекция (не то же самое слово)
+            if best_guess == word.lower():
+                same_word += 1
+                if conf < 0.7:  # Низкая confidence но слово уже правильное
+                    low_conf_not_corrected.append((word, conf, 'same_word'))
+                continue
+            
+            # Сохраняем регистр оригинального слова
+            if word[0].isupper():
+                corrected_word = best_guess.capitalize()
+            else:
+                corrected_word = best_guess
+            
+            # DEBUG: Логируем первые 5 коррекций
+            if corrections_count < 5:
+                log_event(
+                    f"SymSpell correction: '{word}' (conf={conf:.3f}) -> '{corrected_word}'",
+                    level='INFO'
+                )
+            
+            words_data[i] = corrected_word
+            corrections_count += 1
+
+        # Логируем статистику
+        log_event(
+            f"SymSpell: corrected={corrections_count}, "
+            f"skipped_high_conf={skipped_high_conf}, "
+            f"skipped_short={skipped_short}, "
+            f"no_suggestions={no_suggestions}, "
+            f"same_word={same_word}, "
+            f"total_words={len(words_data)}",
+            level='INFO'
+        )
+        
+        # Логируем первые 5 слов с низкой confidence которые не были скорректированы
+        if low_conf_not_corrected:
+            log_event(
+                f"Low conf not corrected (first 5): {low_conf_not_corrected[:5]}",
+                level='INFO'
+            )
+
+        return words_data
+
+
     def _crop_word(
             self,
             img: Image.Image,
@@ -244,77 +346,79 @@ class OCRModel:
         
         return word_img
 
-    
+
     def _sort_words_by_position(self, words_data: list[dict]) -> list[dict]:
         """
         Сортирует слова по позиции: сверху вниз, слева направо.
-        
-        Улучшенная логика с кластеризацией строк:
-            1. Вычисляем глобальную среднюю высоту bbox + tolerance (10%)
-            2. Группируем слова в строки по Y координате
-            3. Для каждой строки пересчитываем локальную среднюю Y
-            4. Сортируем строки по средней Y, слова внутри строк по X
-        
+
+        Улучшенная логика с вертикальным перекрытием bbox:
+            1. Сортируем слова по верхней границе (y_top)
+            2. Группируем в строки по вертикальному перекрытию (IoU по Y)
+            3. Если перекрытие > 50% высоты слова → та же строка
+            4. Сортируем строки по Y, слова внутри строк по X
+
         Args:
             words_data: список словарей с ключами "text", "bbox", "confidence"
-            
+
         Returns:
             отсортированный список
         """
         if len(words_data) == 0:
             return []
-        
-        # ВЕКТОРИЗАЦИЯ: Вычисляем центры и высоты для всех bbox одновременно
-        bboxes = np.array([w["bbox"] for w in words_data])  # [N, 4]
-        centers_x = (bboxes[:, 0] + bboxes[:, 2]) / 2  # [N]
-        centers_y = (bboxes[:, 1] + bboxes[:, 3]) / 2  # [N]
-        heights = bboxes[:, 3] - bboxes[:, 1]  # [N]
-        
-        # Добавляем вычисленные значения в словари
-        for i, word in enumerate(words_data):
-            word["center_x"] = centers_x[i]
-            word["center_y"] = centers_y[i]
-            word["height"] = heights[i]
-        
-        # Глобальная средняя высота + tolerance (10% вместо 50%)
-        avg_height = heights.mean()
-        tolerance = avg_height * 0.1  # Более строгая группировка
-        
-        # Сортируем по Y для группировки
-        words_sorted = sorted(words_data, key=lambda w: w["center_y"])
-        
-        # Кластеризация строк с пересчётом локальной средней Y
+
+        # Подготовка данных: вычисляем координаты один раз
+        for w in words_data:
+            x1, y1, x2, y2 = w["bbox"]
+            w["y_top"] = y1
+            w["y_bottom"] = y2
+            w["x_left"] = x1
+            w["x_right"] = x2
+            w["center_x"] = (x1 + x2) / 2
+            w["center_y"] = (y1 + y2) / 2
+            w["height"] = y2 - y1
+
+        # Сортируем все слова по верхней границе (Y)
+        words_sorted_y = sorted(words_data, key=lambda x: x["y_top"])
+
+        # Группировка в строки по вертикальному перекрытию
         lines = []
-        current_line = [words_sorted[0]]
-        current_line_y = words_sorted[0]["center_y"]
-        
-        for word in words_sorted[1:]:
-            if abs(word["center_y"] - current_line_y) < tolerance:
-                # Та же строка
-                current_line.append(word)
-            else:
-                # Новая строка - пересчитываем локальную среднюю Y
-                line_y_values = [w["center_y"] for w in current_line]
-                current_line_y = np.mean(line_y_values)
-                
-                lines.append((current_line_y, current_line))
-                current_line = [word]
-                current_line_y = word["center_y"]
-        
-        # Добавляем последнюю строку
-        line_y_values = [w["center_y"] for w in current_line]
-        current_line_y = np.mean(line_y_values)
-        lines.append((current_line_y, current_line))
-        
-        # Сортируем строки по средней Y, слова внутри по X (слева направо)
+        if words_sorted_y:
+            current_line = [words_sorted_y[0]]
+            # Интервал текущей строки по вертикали
+            line_y1 = words_sorted_y[0]["y_top"]
+            line_y2 = words_sorted_y[0]["y_bottom"]
+
+            for i in range(1, len(words_sorted_y)):
+                word = words_sorted_y[i]
+
+                # Вычисляем вертикальное перекрытие интервала слова и интервала строки
+                overlap_y1 = max(line_y1, word["y_top"])
+                overlap_y2 = min(line_y2, word["y_bottom"])
+                overlap_h = max(0, overlap_y2 - overlap_y1)
+
+                # Если перекрытие > 50% высоты текущего слова → это одна строка
+                if overlap_h > (word["height"] * 0.5):
+                    current_line.append(word)
+                    # Расширяем границы строки
+                    line_y1 = min(line_y1, word["y_top"])
+                    line_y2 = max(line_y2, word["y_bottom"])
+                else:
+                    # Новая строка
+                    lines.append(current_line)
+                    current_line = [word]
+                    line_y1, line_y2 = word["y_top"], word["y_bottom"]
+            
+            lines.append(current_line)
+
+        # Сортируем слова внутри строк по X (слева направо)
         sorted_words = []
-        for _, line in sorted(lines, key=lambda x: x[0]):
-            line_sorted = sorted(line, key=lambda w: w["center_x"])
+        for line in lines:
+            line_sorted = sorted(line, key=lambda x: x["x_left"])
             sorted_words.extend(line_sorted)
-        
+
         return sorted_words
-    
-    
+
+
     def _merge_words_to_text(self, words_data: list[dict]) -> str:
         """
         Склеивает слова в текст с учётом строк.
@@ -332,10 +436,10 @@ class OCRModel:
         if len(words_data) == 0:
             return ""
         
-        # ВЕКТОРИЗАЦИЯ: Вычисляем среднюю высоту через NumPy
-        heights = np.array([w["height"] for w in words_data])
-        avg_height = heights.mean()
-        line_tolerance = avg_height * 0.1  # Используем ту же tolerance что и в _sort_words_by_position
+        # Вычисляем среднюю высоту через список (уже есть в словарях)
+        heights = [w["height"] for w in words_data]
+        avg_height = sum(heights) / len(heights)
+        line_tolerance = avg_height * 0.5  # 50% для определения новой строки
         
         lines = []
         current_line = [words_data[0]["text"]]
@@ -373,11 +477,11 @@ class OCRModel:
             return_raw: возвращать сырые log_probs (для тестирования)
             
         Returns:
-            список распознанных слов в исходном порядке(как на изображении)
-            или (список слов, список log_probs) если return_raw=True
+            (список распознанных слов, список confidence) в исходном порядке
+            или (список слов, список confidence, список log_probs) если return_raw=True
         """
         if len(word_imgs) == 0:
-            return [] if not return_raw else ([], [])
+            return ([], []) if not return_raw else ([], [], [])
         
         # Измеряем ширины всех изображений
         widths = [img.size[0] for img in word_imgs]
@@ -390,6 +494,7 @@ class OCRModel:
         segment_size = max(1, len(sorted_imgs) // 4)  # Минимум 1 изображение в сегменте
         
         all_predictions = []
+        all_confidences = []
         all_log_probs = [] if return_raw else None
         
         # Обрабатываем сегментами
@@ -416,9 +521,9 @@ class OCRModel:
                     w = img_tensor.shape[2]
                     if w < max_width:
                         # F.pad: (left, right, top, bottom)
-                        # Паддим справа до max_width белым цветом (1.0)
+                        # Паддим справа до max_width
                         padding = (0, max_width - w, 0, 0)
-                        padded_img = F.pad(img_tensor, padding, mode='constant', value=1.0)
+                        padded_img = F.pad(img_tensor, padding, mode='constant', value=self.word_decoder.padding_value)
                         padded_tensors.append(padded_img)
                     else:
                         padded_tensors.append(img_tensor)
@@ -437,6 +542,9 @@ class OCRModel:
                 with torch.no_grad():
                     logits = self.word_decoder.model(batch_tensor)  # [seq_len, batch, num_classes] - RAW LOGITS
                 
+                # Вычисляем log_probs для confidence
+                log_probs = torch.nn.functional.log_softmax(logits, dim=2)  # [seq_len, batch, num_classes]
+                
                 # Сохраняем logits если нужно
                 if return_raw:
                     all_log_probs.append(logits)
@@ -444,11 +552,9 @@ class OCRModel:
                 # CTC декодирование
                 if self.word_decoder.use_beam_search:
                     # Beam search декодирование
-                    log_probs = torch.nn.functional.log_softmax(logits, dim=2)  # [seq_len, batch, num_classes]
                     log_probs_for_beam = log_probs.transpose(0, 1).contiguous()  # [batch, seq_len, num_classes]
                     
                     # Вычисляем lengths для каждого изображения в батче
-                    # lengths = ширина изображения / stride модели (примерно seq_len)
                     batch_lengths = torch.full((len(batch),), log_probs.shape[0], dtype=torch.int32, device=env.device)
                     
                     predictions = self.word_decoder.beam_search_decoder.decode(log_probs_for_beam, lengths=batch_lengths)
@@ -456,20 +562,42 @@ class OCRModel:
                     # Greedy декодирование (baseline)
                     predictions = decode_predictions(logits, self.word_decoder.dataset_obj, blank_idx=0)
                 
+                # Вычисляем confidence для каждого слова
+                # Confidence = средняя вероятность предсказанных символов (без blank)
+                probs = torch.exp(log_probs)  # [seq_len, batch, num_classes]
+                
+                for batch_idx, pred_text in enumerate(predictions):
+                    if len(pred_text) == 0:
+                        # Пустое предсказание → низкая уверенность
+                        all_confidences.append(0.0)
+                    else:
+                        # Получаем индексы предсказанных символов
+                        pred_indices = [self.word_decoder.dataset_obj.char_to_idx.get(char, 0) for char in pred_text]
+                        
+                        # Вычисляем среднюю вероятность предсказанных символов
+                        # Берём максимальную вероятность на каждом timestep и усредняем
+                        max_probs = probs[:, batch_idx, :].max(dim=1)[0]  # [seq_len]
+                        confidence = max_probs.mean().item()
+                        
+                        all_confidences.append(confidence)
+                
                 all_predictions.extend(predictions)
         
         # Восстанавливаем исходный порядок
         original_order_predictions = [''] * len(word_imgs)
-        for i, pred in zip(sorted_indices, all_predictions):
-            original_order_predictions[i] = pred
+        original_order_confidences = [0.0] * len(word_imgs)
         
-        # Применяем spell checker (если включён)
-        if self.use_spell_checker and self.spell_checker is not None:
-            original_order_predictions = self.spell_checker.correct_text(original_order_predictions)
+        for i, (pred, conf) in zip(sorted_indices, zip(all_predictions, all_confidences)):
+            original_order_predictions[i] = pred
+            original_order_confidences[i] = conf
+        
+        # Применяем symspellpy (если включён) с учётом confidence
+        if self.use_sym_spell:
+            original_order_predictions = self.correct_words_data(original_order_predictions, original_order_confidences)
 
         if return_raw:
-            return original_order_predictions, all_log_probs
-        return original_order_predictions
+            return original_order_predictions, original_order_confidences, all_log_probs
+        return original_order_predictions, original_order_confidences
 
 
     def _detect_words_batch(self, imgs: list[Image.Image], return_raw: bool = False):
@@ -609,10 +737,10 @@ class OCRModel:
             
             # Распознаём батчем (батчинг word decoder)
             if return_raw_predictions:
-                word_texts, word_log_probs = self._recognize_words_batch(word_imgs, return_raw=True)
+                word_texts, word_confidences, word_log_probs = self._recognize_words_batch(word_imgs, return_raw=True)
                 raw_predictions['crnn_log_probs'].extend(word_log_probs)
             else:
-                word_texts = self._recognize_words_batch(word_imgs)
+                word_texts, word_confidences = self._recognize_words_batch(word_imgs)
             
             # Формируем words_data
             words_data = [
@@ -620,9 +748,10 @@ class OCRModel:
                     "text": text,
                     "bbox": bbox,
                     "confidence": conf,
-                    "class_id": cls_id
+                    "class_id": cls_id,
+                    "word_confidence": word_conf  # Confidence от CRNN
                 }
-                for text, bbox, conf, cls_id in zip(word_texts, bboxes, confidences, class_ids)
+                for text, bbox, conf, cls_id, word_conf in zip(word_texts, bboxes, confidences, class_ids, word_confidences)
             ]
             
             # Сортируем и склеиваем

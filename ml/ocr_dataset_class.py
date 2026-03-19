@@ -129,54 +129,63 @@ class OCRPipelineDataset(Dataset):
         """
         Сортирует слова по позиции: сверху вниз, слева направо.
         
-        Копия логики из OCRModel._sort_words_by_position() с кластеризацией строк.
+        Улучшенная логика с вертикальным перекрытием bbox:
+            1. Сортируем слова по верхней границе (y_top)
+            2. Группируем в строки по вертикальному перекрытию (IoU по Y)
+            3. Если перекрытие > 50% высоты слова → та же строка
+            4. Сортируем строки по Y, слова внутри строк по X
         """
         if len(words_data) == 0:
             return []
         
-        # Вычисляем центры и высоты
-        bboxes = np.array([w["bbox"] for w in words_data])
-        centers_x = (bboxes[:, 0] + bboxes[:, 2]) / 2
-        centers_y = (bboxes[:, 1] + bboxes[:, 3]) / 2
-        heights = bboxes[:, 3] - bboxes[:, 1]
+        # Подготовка данных: вычисляем координаты один раз
+        for w in words_data:
+            x1, y1, x2, y2 = w["bbox"]
+            w["y_top"] = y1
+            w["y_bottom"] = y2
+            w["x_left"] = x1
+            w["x_right"] = x2
+            w["center_x"] = (x1 + x2) / 2
+            w["center_y"] = (y1 + y2) / 2
+            w["height"] = y2 - y1
         
-        for i, word in enumerate(words_data):
-            word["center_x"] = centers_x[i]
-            word["center_y"] = centers_y[i]
-            word["height"] = heights[i]
+        # Сортируем все слова по верхней границе (Y)
+        words_sorted_y = sorted(words_data, key=lambda x: x["y_top"])
         
-        # Глобальная средняя высота + tolerance (10%)
-        avg_height = heights.mean()
-        tolerance = avg_height * 0.1
-        
-        # Сортируем по Y
-        words_sorted = sorted(words_data, key=lambda w: w["center_y"])
-        
-        # Кластеризация строк с пересчётом локальной средней Y
+        # Группировка в строки по вертикальному перекрытию
         lines = []
-        current_line = [words_sorted[0]]
-        current_line_y = words_sorted[0]["center_y"]
+        if words_sorted_y:
+            current_line = [words_sorted_y[0]]
+            # Интервал текущей строки по вертикали
+            line_y1 = words_sorted_y[0]["y_top"]
+            line_y2 = words_sorted_y[0]["y_bottom"]
+            
+            for i in range(1, len(words_sorted_y)):
+                word = words_sorted_y[i]
+                
+                # Вычисляем вертикальное перекрытие интервала слова и интервала строки
+                overlap_y1 = max(line_y1, word["y_top"])
+                overlap_y2 = min(line_y2, word["y_bottom"])
+                overlap_h = max(0, overlap_y2 - overlap_y1)
+                
+                # Если перекрытие > 50% высоты текущего слова → это одна строка
+                if overlap_h > (word["height"] * 0.5):
+                    current_line.append(word)
+                    # Расширяем границы строки
+                    line_y1 = min(line_y1, word["y_top"])
+                    line_y2 = max(line_y2, word["y_bottom"])
+                else:
+                    # Новая строка
+                    lines.append(current_line)
+                    current_line = [word]
+                    line_y1, line_y2 = word["y_top"], word["y_bottom"]
+            
+            lines.append(current_line)
         
-        for word in words_sorted[1:]:
-            if abs(word["center_y"] - current_line_y) < tolerance:
-                current_line.append(word)
-            else:
-                # Новая строка - пересчитываем локальную среднюю Y
-                line_y_values = [w["center_y"] for w in current_line]
-                current_line_y = np.mean(line_y_values)
-                lines.append((current_line_y, current_line))
-                current_line = [word]
-                current_line_y = word["center_y"]
-        
-        # Добавляем последнюю строку
-        line_y_values = [w["center_y"] for w in current_line]
-        current_line_y = np.mean(line_y_values)
-        lines.append((current_line_y, current_line))
-        
-        # Сортируем строки по средней Y, слова внутри по X
+        # Сортируем слова внутри строк по X (слева направо)
         sorted_words = []
-        for _, line in sorted(lines, key=lambda x: x[0]):
-            line_sorted = sorted(line, key=lambda w: w["center_x"])
+        for line in lines:
+            line_sorted = sorted(line, key=lambda x: x["x_left"])
             sorted_words.extend(line_sorted)
         
         return sorted_words

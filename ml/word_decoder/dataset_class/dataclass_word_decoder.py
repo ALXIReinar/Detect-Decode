@@ -307,8 +307,8 @@ class CRNNWordDataset(Dataset):
             # Паддим изображение справа до max_width
             c, h, w = img.shape  # [3, H, W]
             if w < max_width:
-                # Создаём белый паддинг (значение 1.0) для всех каналов
-                padded_img = torch.ones(c, h, max_width, dtype=img.dtype)
+                # Создаём чёрный паддинг (значение 0.0) для всех каналов
+                padded_img = torch.zeros(c, h, max_width, dtype=img.dtype)
                 padded_img[:, :, :w] = img
                 img = padded_img
             

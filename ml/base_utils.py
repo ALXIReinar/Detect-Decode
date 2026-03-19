@@ -6,7 +6,7 @@ from matplotlib import pyplot as plt, patches
 from ml.logger_config import log_event
 
 
-def visualize_bboxes(image, boxes, figcolor='red', figsize=(8, 8), linewidth=1):
+def visualize_bboxes(image, boxes, figcolor='red', figsize=(8, 8), linewidth=1, save_path=None, show=True):
     if isinstance(image, torch.Tensor):
         image = image.detach().cpu()
         if image.ndim == 3:
@@ -35,7 +35,9 @@ def visualize_bboxes(image, boxes, figcolor='red', figsize=(8, 8), linewidth=1):
         )
         ax.add_patch(rect)
 
-    plt.show()
+    plt.savefig(save_path, dpi=300)
+    if show:
+        plt.show()
 
 
 def check_imgs_anns_equal(dataset_location: Path):

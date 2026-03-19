@@ -19,8 +19,7 @@ async def lifespan(web_app):
     web_app.state.ocr_model = OCRModel(
         detector_weights_path, word_decoder_weights_path,
         use_beam_search=True,
-        use_spell_checker=False, # При текущей реализации только ухудшает точность
-        vocabulary_path=env.vocabulary_path,
+        use_sym_spell=False,
         max_det=env.max_det,
         vertical_padding_ratio=0.02,
     )
