@@ -214,32 +214,13 @@ class OCRModel:
 
 
     def correct_words_data(self, words_data: list[str], confidences: list[float]):
-        """
-        Корректирует слова с использованием SymSpell с учётом confidence.
-        
-        Args:
-            words_data: список слов для коррекции
-            confidences: список confidence для каждого слова
-            
-        Returns:
-            список скорректированных слов
-        """
-        corrections_count = 0
-        skipped_high_conf = 0
-        skipped_short = 0
-        no_suggestions = 0
-        same_word = 0
-        low_conf_not_corrected = []  # Слова с низкой confidence которые не были скорректированы
-        
         for i, (word, conf) in enumerate(zip(words_data, confidences)):
             # Если word_decoder очень уверен, отдаём без корректировок
             if conf > self.word_conf_thres:
-                skipped_high_conf += 1
                 continue
 
             # Если слово - просто цифры или очень короткое, тоже можно пропустить
             if not word.isalpha() or len(word) < 2:
-                skipped_short += 1
                 continue
 
             # Ищем предложения по исправлению слов
@@ -250,9 +231,6 @@ class OCRModel:
             )
 
             if not suggestions:
-                no_suggestions += 1
-                if conf < 0.7:  # Низкая confidence но нет suggestions
-                    low_conf_not_corrected.append((word, conf, 'no_suggestions'))
                 continue
             
             # Берем лучший вариант
@@ -260,9 +238,6 @@ class OCRModel:
             
             # Проверяем что это действительно коррекция (не то же самое слово)
             if best_guess == word.lower():
-                same_word += 1
-                if conf < 0.7:  # Низкая confidence но слово уже правильное
-                    low_conf_not_corrected.append((word, conf, 'same_word'))
                 continue
             
             # Сохраняем регистр оригинального слова
@@ -271,33 +246,7 @@ class OCRModel:
             else:
                 corrected_word = best_guess
             
-            # DEBUG: Логируем первые 5 коррекций
-            if corrections_count < 5:
-                log_event(
-                    f"SymSpell correction: '{word}' (conf={conf:.3f}) -> '{corrected_word}'",
-                    level='INFO'
-                )
-            
             words_data[i] = corrected_word
-            corrections_count += 1
-
-        # Логируем статистику
-        log_event(
-            f"SymSpell: corrected={corrections_count}, "
-            f"skipped_high_conf={skipped_high_conf}, "
-            f"skipped_short={skipped_short}, "
-            f"no_suggestions={no_suggestions}, "
-            f"same_word={same_word}, "
-            f"total_words={len(words_data)}",
-            level='INFO'
-        )
-        
-        # Логируем первые 5 слов с низкой confidence которые не были скорректированы
-        if low_conf_not_corrected:
-            log_event(
-                f"Low conf not corrected (first 5): {low_conf_not_corrected[:5]}",
-                level='INFO'
-            )
 
         return words_data
 
@@ -570,16 +519,14 @@ class OCRModel:
                     if len(pred_text) == 0:
                         # Пустое предсказание → низкая уверенность
                         all_confidences.append(0.0)
-                    else:
-                        # Получаем индексы предсказанных символов
-                        pred_indices = [self.word_decoder.dataset_obj.char_to_idx.get(char, 0) for char in pred_text]
-                        
-                        # Вычисляем среднюю вероятность предсказанных символов
-                        # Берём максимальную вероятность на каждом timestep и усредняем
-                        max_probs = probs[:, batch_idx, :].max(dim=1)[0]  # [seq_len]
-                        confidence = max_probs.mean().item()
-                        
-                        all_confidences.append(confidence)
+                        continue
+
+                    # Вычисляем среднюю вероятность предсказанных символов
+                    # Берём максимальную вероятность на каждом timestep и усредняем
+                    max_probs = probs[:, batch_idx, :].max(dim=1)[0]  # [seq_len]
+                    confidence = max_probs.mean().item()
+
+                    all_confidences.append(confidence)
                 
                 all_predictions.extend(predictions)
         

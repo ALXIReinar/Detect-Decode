@@ -114,8 +114,7 @@ def test_run(detector_weights_path: Path | str, word_decoder_weights_path: Path,
                     f"GT bboxes: {len(gt_bboxes)}",
                     level='INFO'
                 )
-                # log_event(f"Max conf: {max(pred_confidences)} | Min Conf CRNN: {min(pred_confidences)}", level='DEBUG')
-            
+
             # Статистики детектора (для mAP)
             # Конвертируем pred_bboxes в тензор
             if len(pred_bboxes) > 0:
@@ -152,9 +151,11 @@ def test_run(detector_weights_path: Path | str, word_decoder_weights_path: Path,
                 ))
     
     # Подсчёт метрик
-    log_event('Подсчёт метрик...', level='INFO')
+    log_event(f'\033[32m{'>>>' * 10} Закончили тестирование {'<<<' * 10}\033[0m', level='INFO')
     
     # CER, WER (сравниваем весь текст целиком)
+    # ВАЖНО: Unsupported слова НЕ фильтруются - они часть реального текста
+    # Модель должна их распознавать, даже если они не в charset
     # Нормализуем тексты:
     # 1. Заменяем переносы строк на пробелы
     # 2. Приводим к lowercase (модель не различает регистр)
