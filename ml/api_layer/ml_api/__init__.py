@@ -13,7 +13,7 @@ async def healthcheck():
         'service': 'ml-server',
         'detector_version': {
             'model': 'yolov8n',
-            'version': '0.1'
+            'version': '0.2'
         },
         'word_decooder': {
             'model': 'crnn',

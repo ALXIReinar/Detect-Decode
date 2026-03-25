@@ -1,6 +1,8 @@
 from xml.etree import ElementTree as ET
 from pathlib import Path
 from typing import Literal
+import albumentations as A
+import numpy as np
 
 import torch
 from PIL import Image
@@ -23,36 +25,64 @@ class DetectorAugment(nn.Module):
         self.mode = mode
         self.img_size = img_size
         
-        # CPU preprocessing - только базовая подготовка
-        self.cpu_transform = v2.Compose([
+        # Albumentations: pixel-level аугментации (не меняют геометрию, bbox не нужны)
+        albu_transforms = [
+            A.CLAHE(clip_limit=2, tile_grid_size=(8, 8), p=1.0),
+            A.MedianBlur(blur_limit=3, p=1.0),
+        ]
+        
+        if mode == 'train':
+            # Добавляем train-only pixel-level аугментации
+            albu_transforms.extend([
+                A.GaussNoise(p=0.3),
+                A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.5),
+            ])
+        
+        self.albu_transform = A.Compose(albu_transforms)
+        
+        # Torchvision v2: геометрические трансформации (bbox-aware)
+        torch_transforms = [
             v2.ToImage(),
             v2.ToDtype(dtype=torch.uint8, scale=True),
-            v2.Grayscale(),
-            v2.Resize((img_size, img_size)),  # Параметризованный размер
-            v2.ToDtype(dtype=torch.float32, scale=True),
-        ])
+            v2.Resize((img_size, img_size)),  # bbox автоматически масштабируются
+        ]
         
-        # GPU augmentations - тяжелые операции на GPU
-        # self.gpu_train_transform = v2.Compose([
-        #     v2.RandomAffine(
-        #         degrees=0,
-        #         translate=(0.1, 0.1),
-        #         scale=(0.9, 1.1)
-        #     ),
-        #     v2.RandomAdjustSharpness(sharpness_factor=2, p=0.5),
-        #     v2.RandomAutocontrast(p=0.5),
-        #     v2.SanitizeBoundingBoxes(min_size=2),
-        # ])
+        if mode == 'train':
+            # Легкие геометрические аугментации (bbox-aware)
+            torch_transforms.extend([
+                v2.RandomAffine(
+                    degrees=3,
+                    translate=(0.05, 0.05),
+                    scale=(0.95, 1.05),
+                ),
+                v2.SanitizeBoundingBoxes(min_size=2),
+            ])
+        
+        torch_transforms.append(v2.ToDtype(dtype=torch.float32, scale=True))
+        self.torch_transform = v2.Compose(torch_transforms)
+
+    @staticmethod
+    def extract_green_channel(img: Image.Image) -> np.ndarray:
+        """Извлекает зелёный канал из RGB изображения"""
+        if img.mode != 'RGB':
+            img = img.convert('RGB')
+        return np.array(img.getchannel('G'), dtype=np.uint8)
 
     def forward(self, img, target=None):
-        # CPU preprocessing (всегда)
+        # 1. Извлекаем зелёный канал (PIL -> numpy)
+        img_np = self.extract_green_channel(img)
+        
+        # 2. Применяем Albumentations (pixel-level, bbox не нужны)
+        img_np = self.albu_transform(image=img_np)['image']
+        img_pil = Image.fromarray(img_np, mode='L')
+        
+        # 4. Применяем torchvision (геометрия + bbox)
         if target is not None:
-            img, target = self.cpu_transform(img, target)
-            # Возвращаем всегда 2 значения для совместимости
-            return img, target
+            img_tensor, target = self.torch_transform(img_pil, target)
+            return img_tensor, target
         else:
-            img = self.cpu_transform(img)
-            return img
+            img_tensor = self.torch_transform(img_pil)
+            return img_tensor
 
 
 
@@ -175,7 +205,7 @@ class OCRDetectorDataset(Dataset):
 
         "Загружаем изображение напрямую"
         path_img = sample['path_img']
-        img = Image.open(path_img).convert('L')
+        img = Image.open(path_img)
 
         "Формируем метки и GTB"
         W, H = sample['size_img']
@@ -208,7 +238,7 @@ class OCRDetectorDataset(Dataset):
         all_boxes = []
         all_batch_idx = []
 
-        for i, (img, target) in enumerate(batch):  # ← ИСПРАВЛЕНО: только 2 значения
+        for i, (img, target) in enumerate(batch):
             images.append(img)
 
             boxes = target['boxes']
@@ -233,7 +263,7 @@ class OCRDetectorDataset(Dataset):
             cx = all_boxes[:, 0] + box_w * 0.5
             cy = all_boxes[:, 1] + box_h * 0.5
             
-            # Нормализация (векторизованно)
+            # Нормализация
             normalized_boxes = torch.stack([
                 cx / w,
                 cy / h,
@@ -252,3 +282,19 @@ class OCRDetectorDataset(Dataset):
             targets = torch.zeros((0, 6), dtype=torch.float32)
         
         return images, targets
+
+
+# im_path = Path(r"C:\Users\ALXI\Pictures\Screenshots")
+# image = Image.open(im_path / 'Снимок экрана 2025-12-18 043709.png')
+# transform = DetectorAugment('val', 1280)
+# image_tsr2np = transform(image).numpy()
+#
+# image_tsr2np = np.transpose(image_tsr2np, (1, 2, 0))
+# image_tsr2np = np.squeeze(image_tsr2np)
+#
+# if image_tsr2np.max() <= 1.0:
+#     image_tsr2np = (image_tsr2np * 255).astype(np.uint8)
+# else:
+#     image_tsr2np = image_tsr2np.astype(np.uint8)
+#
+# Image.fromarray(image_tsr2np).save(im_path / 'green_223.JPG')

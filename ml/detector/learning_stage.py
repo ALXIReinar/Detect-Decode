@@ -1,19 +1,23 @@
+import os
+from pathlib import Path
+
 import torch
 from tqdm import tqdm
 from ultralytics.utils.metrics import box_iou, ap_per_class
 from ultralytics.utils.nms import non_max_suppression
 
 from ml.config import WORKDIR, env
+from ml.detector.dataset_class.hwr200_dataset import HWR200DetectorDataset
 from ml.logger_config import log_event
 from ml.detector.models import WordDetector, model_detector_code
 
 from ultralytics.utils.loss import v8DetectionLoss
 from types import SimpleNamespace
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import MultiStepLR
+from torch.optim.lr_scheduler import MultiStepLR, OneCycleLR
 from datetime import datetime
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from ml.detector.utils.train_run_plots import plot_loss_dynamics, plot_metrics_dynamics, plot_lr_chronology
 
@@ -22,13 +26,19 @@ from ml.detector.utils.train_run_plots import plot_loss_dynamics, plot_metrics_d
 # Датасет, Даталоадеры
 # ======================================================================================================================
 
-def train_run():
-    """Запуск обучения модели"""
+def train_run(
+        train_dset: Dataset, val_dset: Dataset, models_dir: Path | str,
+
+        pretrained_weights: str = None, freeze_backbone: bool = False,
+
+        epochs: int = 60,
+):
+    """"""
     "Гиперпараметры"
     batch_size_train = 4  # Уменьшено для экономии памяти GPU
-    batch_size_val = 4
-    accumulation_steps = 2  # Эффективный batch = 4 * 2 = 8
-    dataload_workers = 6
+    batch_size_val = 2
+    accumulation_steps = 1  # Эффективный batch = 4 * 2 = 8
+    dataload_workers = 3
     prefetch_factor = 2
     img_size = 1280
     
@@ -36,15 +46,13 @@ def train_run():
     print(f"Эффективный batch size: {batch_size_train * accumulation_steps}")
 
 
-    train_dset = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'train', 'train', img_size)
-    val_dset = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'val', 'val', img_size)
 
     train_loader = DataLoader(
         dataset=train_dset,
         batch_size=batch_size_train,
         shuffle=True,
         num_workers=dataload_workers,
-        collate_fn=OCRDetectorDataset.collate_fn,
+        collate_fn=train_dset.collate_fn,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=prefetch_factor
@@ -53,7 +61,7 @@ def train_run():
         dataset=val_dset,
         batch_size=batch_size_val,
         num_workers=dataload_workers,
-        collate_fn=OCRDetectorDataset.collate_fn,
+        collate_fn=val_dset.collate_fn,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=prefetch_factor
@@ -65,22 +73,60 @@ def train_run():
 # ======================================================================================================================
 
     model_detector = WordDetector()
+    
+    # Transfer Learning: загрузка предобученных весов
+    if pretrained_weights:
+        if os.path.exists(pretrained_weights):
+            log_event(f'Загрузка предобученных весов из: \033[36m{pretrained_weights}\033[0m')
+            checkpoint = torch.load(pretrained_weights, map_location=env.device, weights_only=False)
+            model_detector.load_state_dict(checkpoint['state_model'])
+            log_event('Веса успешно загружены для \033[32mtransfer learning\033[0m')
+        else:
+            log_event(f'Файл весов не найден: \033[31m{pretrained_weights}\033[0m', level='ERROR')
+            raise FileNotFoundError(f'Pretrained weights not found: {pretrained_weights}')
+    
+    # Заморозка backbone для transfer learning
+    if freeze_backbone and pretrained_weights:
+        log_event('Заморозка backbone (обучается только detection head)', level='INFO')
+        # YOLOv8n: последний слой (индекс -1) — это Detect head
+        # Замораживаем все слои кроме последнего
+        for i, layer in enumerate(model_detector.model):
+
+            # if i < len(model_detector.model) - 1:  # Все слои кроме Detect
+
+            if i < 12 or i == len(model_detector.model) - 1:  # Первые 13 слоёв и Detect Head
+                for param in layer.parameters():
+                    param.requires_grad = False
+        
+        # Подсчёт замороженных/обучаемых параметров
+        frozen_params = sum(p.numel() for p in model_detector.parameters() if not p.requires_grad)
+        trainable_params = sum(p.numel() for p in model_detector.parameters() if p.requires_grad)
+        log_event(f'Замороженные параметры: \033[33m{frozen_params:,}\033[0m', level='INFO')
+        log_event(f'Обучаемые параметры: \033[32m{trainable_params:,}\033[0m', level='INFO')
+    
     model_detector.to(env.device)
     loss_func = v8DetectionLoss(model_detector)
-    hyp = SimpleNamespace(box=7.5, cls=0.5, dfl=1.5) # изменить cls на 1.0?
+    hyp = SimpleNamespace(box=7.5, cls=0.5, dfl=1.5)
     loss_func.hyp = hyp
 
-    opt = AdamW(model_detector.parameters(), lr=0.01, weight_decay=5e-4)
-    lr_sched = MultiStepLR(opt, milestones=[5, 35, 50], gamma=0.1) # Обязательно сменить подход сбора last_lr при смене планировщика!
+    opt = AdamW(model_detector.parameters(), lr=0.00075, weight_decay=5e-4)
+    # lr_sched = MultiStepLR(opt, milestones=[5, 35, 50], gamma=0.1) # Обязательно сменить подход сбора last_lr при смене планировщика!
+    lr_sched = OneCycleLR(
+        opt,
+        max_lr=0.001,
+        epochs=epochs,
+        steps_per_epoch=len(train_loader),
+        pct_start=0.2,
+        anneal_strategy='cos',
+    )
 
 
-    early_stopping_mode = False
+    early_stopping_mode = True
     threshold_loss = 0.01
-    early_stopping = 12
-    models_dir = WORKDIR / 'ml' / 'model_weights' / 'detector' / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
-    models_dir.mkdir(parents=True)
+    early_stopping = 20
+    models_dir.mkdir(parents=True, exist_ok=True)
 
-    epochs = 60  # Полное обучение (было 5 для теста)
+
 
 # ======================================================================================================================
 # Обучение
@@ -122,6 +168,7 @@ def train_run():
             # Обновляем веса только каждые accumulation_steps батчей
             if (i + 1) % accumulation_steps == 0:
                 opt.step()
+                lr_sched.step()
                 opt.zero_grad()
 
             "Считаем лосс (умножаем обратно для правильного отображения)"
@@ -133,6 +180,7 @@ def train_run():
         # ВАЖНО: если последний батч не кратен accumulation_steps, обновляем веса
         if (i + 1) % accumulation_steps != 0:
             opt.step()
+            lr_sched.step()
             opt.zero_grad()
 
 
@@ -226,11 +274,17 @@ def train_run():
                         gt[:, 1].cpu()     # target class
                     ))
 
-        lr_sched.step()
-        lr = lr_sched.get_last_lr()[0]
+        "MultiStep LR Scheduler"
+        # lr_sched.step()
+        # lr = lr_sched.get_last_lr()[0]
+        # lr_list.append(lr)
+
+        "OneCycleLR Scheduler"
+        lr = opt.param_groups[0]['lr']
         lr_list.append(lr)
 
         "Подсчёт метрик за эпоху"
+        map50, map5095 = 0.0, 0.0
         if len(stats):
             tp, conf, pred_cls, target_cls = zip(*stats)
 
@@ -248,17 +302,12 @@ def train_run():
 
                 map50 = ap[:, 0].mean()
                 map5095 = ap.mean()
-            else:
-                map50, map5095 = 0.0, 0.0
-
-        else:
-            map50, map5095 = 0.0, 0.0
 
         map50_list.append(map50)
         map5095_list.append(map5095)
         val_loss.append(last_losses_val)
 
-        log_event(f"\033[34mVALIDATION\033[0m Epoch {epoch} | val_loss=\033[31m{last_losses_val[-1]:.4f}\033[0m, box_loss={last_losses_val[0]:.4f}, cls_loss={last_losses_val[1]:.4f}, dfl_loss={last_losses_val[2]:.4f} | mAP@0.5=\033[33m{map50:.4f}\033[0m | mAP@0.5:0.95=\033[36m{map5095:.4f}\033[0m")
+        log_event(f"\033[34mVALIDATION\033[0m Epoch {epoch} | val_loss=\033[31m{last_losses_val[-1]:.4f}\033[0m | mAP@0.5=\033[33m{map50:.4f}\033[0m | mAP@0.5:0.95=\033[36m{map5095:.4f}\033[0m | LR=\033[35m{lr}\033[0m | box_loss={last_losses_val[0]:.4f}, cls_loss={last_losses_val[1]:.4f}, dfl_loss={last_losses_val[2]:.4f}")
 
         history = {
             "general_metrics": {
@@ -268,7 +317,7 @@ def train_run():
                 'map5095_list': map5095_list,
             },
             "train_loss_last": last_losses_train,
-            "val_loss_last": val_loss,
+            "val_loss_last": last_losses_val,
             "map50_cur": map50,
             "map5095_cur": map5095,
             "lr": lr_list
@@ -288,7 +337,20 @@ def train_run():
                 'img_size': img_size,
                 'history': history,
             }
-            torch.save(checkpoint, models_dir.joinpath(f'model_detector{epoch}.pth'))
+            save_path = models_dir.joinpath(f'model_detector{epoch}.pt')
+            try:
+                tmp_file = models_dir.joinpath(f'model_detector{epoch}.tmp')
+                torch.save(checkpoint, save_path)
+                if os.path.exists(tmp_file) and os.path.getsize(tmp_file) > 0:
+                    if os.path.exists(save_path):
+                        os.remove(save_path)
+                    os.rename(tmp_file, save_path)
+                    log_event(f"Успешно сохранено: {save_path} ({os.path.getsize(save_path) / 1e6:.2f} MB)")
+                else:
+                    log_event(f"Файл {tmp_file} пуст!", level='ERROR')
+            except Exception as e:
+                log_event(f"Критическая ошибка при сохранении: {e}", level='CRITICAL')
+
             plateau_loss_epochs = 0
             log_event(f'На эпохе - \033[35m{epoch}\033[0m модель сохранена | Ранняя остановка обучения изменена', level='WARNING')
 
@@ -309,4 +371,23 @@ def train_run():
     log_event(f'\033[34m{'>>>' * 10} Обучение завершено {'<<<' * 10}\033[0m')
 
 if __name__ == '__main__':
-    train_run()
+    epochs = 70
+    img_size = 1280
+    # models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
+    models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / 'fine_tuning_last_10_v1' # 57 эпоха. Смысл закончился потом
+
+
+    "IAM Handwrite Dataset"
+    # train_dset_obj = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'train', 'train', img_size)
+    # val_dset_obj = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'val', 'val', img_size)
+
+    "HWR200 Dataset"
+    train_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '25_samples' / 'train', 'train', img_size=img_size)
+    val_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '25_samples' / 'val', 'val', img_size=img_size)
+
+    transfer_learning_weights = WORKDIR / 'ml/detector/model_weights/fine_tuning_head_only_v3/model_detector15.pt'
+    train_run(
+        train_dset_obj, val_dset_obj, models_dir,
+        pretrained_weights=transfer_learning_weights, freeze_backbone=True,
+        epochs=epochs,
+    )

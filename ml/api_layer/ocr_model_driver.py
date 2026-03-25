@@ -101,15 +101,6 @@ class CRNNModel:
         return model
 
 
-    def __call__(self, img_path):
-        x = Image.open(img_path).convert('L')
-
-        "Добавляем bs dim и перемещаем на device"
-        x = self.dataset_obj.transform(x).unsqueeze(0).to(env.device)
-        x = self.model(x)
-        return x
-
-
 class DetectorModel:
     def __init__(self, weights_path: Path):
         self.img_size: None | int = None
@@ -135,18 +126,6 @@ class DetectorModel:
         model_detector.load_state_dict(model_weights)
         return model_detector
 
-
-    def __call__(self, img_path):
-        self.model.train()
-        x = Image.open(img_path).convert('L')
-
-        "Добавляем bs dim и перемещаем на device"
-        x = self.dataset_obj.transform(x).unsqueeze(0).to(env.device)
-        x = self.model(x)
-        print(x.keys())
-        print(x['boxes'].shape)
-        print(x['scores'].shape)
-        return x
 
 
 class OCRModel:
@@ -368,7 +347,8 @@ class OCRModel:
         return sorted_words
 
 
-    def _merge_words_to_text(self, words_data: list[dict]) -> str:
+    @staticmethod
+    def _merge_words_to_text(words_data: list[dict]) -> str:
         """
         Склеивает слова в текст с учётом строк.
         
@@ -589,12 +569,15 @@ class OCRModel:
         results = []
         resized_size = self.detector.img_size
         
-        for i, (detections, (orig_w, orig_h)) in enumerate(zip(preds_nms, orig_sizes)):
-            if detections is None or len(detections) == 0:
+        # ОПТИМИЗАЦИЯ: Переводим все детекции на CPU за один раз (если не пустые)
+        preds_nms_cpu = [det.cpu() if det is not None and len(det) > 0 else None for det in preds_nms]
+        
+        for i, (detections, (orig_w, orig_h)) in enumerate(zip(preds_nms_cpu, orig_sizes)):
+            if detections is None:
                 results.append(([], [], []))
                 continue
             
-            detections_np = detections.cpu().numpy()
+            detections_np = detections.numpy()
             
             # ВЕКТОРИЗАЦИЯ: Масштабируем все bboxes одновременно через NumPy broadcasting
             scale = np.array([orig_w / resized_size, orig_h / resized_size,

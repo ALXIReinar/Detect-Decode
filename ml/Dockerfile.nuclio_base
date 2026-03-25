@@ -1,0 +1,31 @@
+FROM python:3.10-slim-bookworm
+
+# 1. Системные зависимости (OpenCV, Torch и т.д.)
+RUN apt-get update
+RUN apt-get install -y --no-install-recommends \
+    libgomp1 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libxcb1 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Копируем только колеса и requirements для установки
+WORKDIR /setup
+COPY local_wheels/*.whl ./
+COPY requirements.txt ./
+
+# 3. Ставим всё ГЛОБАЛЬНО (без --user), чтобы любой UID внутри Nuclio видел либы
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir \
+    torch-2.9.1+cu128-cp310-cp310-manylinux_2_28_x86_64.whl \
+    torchvision-0.24.1+cu128-cp310-cp310-manylinux_2_28_x86_64.whl && \
+    pip3 install --no-cache-dir -r requirements.txt && \
+    pip3 install --no-cache-dir ultralytics # на всякий случай, если нет в requirements
+
+# Очищаем за собой
+RUN rm -rf /setup
+
+# Для Nuclio важно, чтобы PYTHONPATH включал /opt/nuclio
+ENV PYTHONPATH=/opt/nuclio
+WORKDIR /opt/nuclio

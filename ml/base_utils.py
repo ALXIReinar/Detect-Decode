@@ -35,7 +35,8 @@ def visualize_bboxes(image, boxes, figcolor='red', figsize=(8, 8), linewidth=1, 
         )
         ax.add_patch(rect)
 
-    plt.savefig(save_path, dpi=300)
+    if save_path:
+        plt.savefig(save_path, dpi=300)
     if show:
         plt.show()
 
