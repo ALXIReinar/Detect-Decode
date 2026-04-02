@@ -2,7 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from ultralytics.utils.loss import v8DetectionLoss
 from ultralytics.utils.metrics import ap_per_class, box_iou
@@ -10,6 +10,7 @@ from ultralytics.utils.nms import non_max_suppression
 
 from ml.config import WORKDIR, env
 from ml.detector.dataset_class.dataclass_detector import OCRDetectorDataset
+from ml.detector.dataset_class.hwr200_dataset import HWR200DetectorDataset
 from ml.logger_config import log_event
 from ml.detector.models import WordDetector
 from ml.detector.utils.args_parser_test_stage import parse_args
@@ -19,7 +20,8 @@ from ml.detector.utils.args_parser_test_stage import parse_args
 # Тестирование
 # ======================================================================================================================
 
-def test_run(weights_path: Path | str, batch_size: int = 4, img_size: int = 1280, workers: int = 2, conf_thres: float = 0.25, iou_thres: float = 0.45):
+def test_run(weights_path: Path | str, batch_size: int = 4, img_size: int = 1280, workers: int = 2, conf_thres: float = 0.25, iou_thres: float = 0.45,
+             test_dset: Dataset=None):
     """
     Тестирование модели детектора.
     
@@ -35,7 +37,6 @@ def test_run(weights_path: Path | str, batch_size: int = 4, img_size: int = 1280
     dataload_workers = workers
     prefetch_factor = 2
 
-    test_dset = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'test', 'val', img_size)
     test_loader = DataLoader(
         dataset=test_dset,
         batch_size=batch_size_test,
@@ -45,6 +46,7 @@ def test_run(weights_path: Path | str, batch_size: int = 4, img_size: int = 1280
         persistent_workers=True,
         prefetch_factor=prefetch_factor
     )
+    log_event(f"Семплов в \033[32mТест Датасете: \033[31m{len(test_dset)}\033[0m")
 
     "Выгружаем веса модели"
     weights_path = Path(weights_path)
@@ -211,11 +213,15 @@ if __name__ == '__main__':
         weights_path_arg = WORKDIR / weights_path_arg
 
     # Запуск
+    # test_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '160_trainval' / 'train', 'val', img_size=1280)
+    test_dset_obj = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'test', 'val', 1280)
+
     res = test_run(
         weights_path=weights_path_arg,
         batch_size=args.batch_size,
         img_size=args.img_size,
         workers=args.workers,
         conf_thres=args.conf_thres,
-        iou_thres=args.iou_thres
+        iou_thres=args.iou_thres,
+        test_dset=test_dset_obj,
     )

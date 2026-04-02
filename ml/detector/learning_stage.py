@@ -29,21 +29,21 @@ from ml.detector.utils.train_run_plots import plot_loss_dynamics, plot_metrics_d
 def train_run(
         train_dset: Dataset, val_dset: Dataset, models_dir: Path | str,
 
-        pretrained_weights: str = None, freeze_backbone: bool = False,
+        pretrained_weights: str = None,
 
         epochs: int = 60,
 ):
     """"""
     "Гиперпараметры"
     batch_size_train = 4  # Уменьшено для экономии памяти GPU
-    batch_size_val = 2
-    accumulation_steps = 1  # Эффективный batch = 4 * 2 = 8
-    dataload_workers = 3
+    batch_size_val = 4
+    accumulation_steps = 2  # Эффективный batch = 4 * 2 = 8
+    dataload_workers = 4
     prefetch_factor = 2
     img_size = 1280
     
-    print(f"Реальный batch size: {batch_size_train}")
-    print(f"Эффективный batch size: {batch_size_train * accumulation_steps}")
+    log_event(f"Реальный batch size: {batch_size_train}")
+    log_event(f"Эффективный batch size: {batch_size_train * accumulation_steps}")
 
 
 
@@ -66,15 +66,19 @@ def train_run(
         persistent_workers=True,
         prefetch_factor=prefetch_factor
     )
-
+    log_event(f"Семплов в \033[33mТрейн Датасете: \033[31m{len(train_dset)}\033[0m")
+    log_event(f"Семплов в \033[32mВал Датасете: \033[36m{len(val_dset)}\033[0m")
 
 # ======================================================================================================================
 # Гиперпараметры
 # ======================================================================================================================
 
     model_detector = WordDetector()
-    
-    # Transfer Learning: загрузка предобученных весов
+
+
+    "Transfer Learning"
+    freeze_backbone, freeze_neck, freeze_head = True, False, False
+
     if pretrained_weights:
         if os.path.exists(pretrained_weights):
             log_event(f'Загрузка предобученных весов из: \033[36m{pretrained_weights}\033[0m')
@@ -86,31 +90,56 @@ def train_run(
             raise FileNotFoundError(f'Pretrained weights not found: {pretrained_weights}')
     
     # Заморозка backbone для transfer learning
-    if freeze_backbone and pretrained_weights:
-        log_event('Заморозка backbone (обучается только detection head)', level='INFO')
-        # YOLOv8n: последний слой (индекс -1) — это Detect head
-        # Замораживаем все слои кроме последнего
+    if pretrained_weights:
+        log_event('Заморозка YOLOv8n', level='INFO')
+
         for i, layer in enumerate(model_detector.model):
+            is_backbone = i <= 9
+            is_neck = 9 < i < len(model_detector.model) - 1
+            is_head = i == len(model_detector.model) - 1
 
-            # if i < len(model_detector.model) - 1:  # Все слои кроме Detect
-
-            if i < 12 or i == len(model_detector.model) - 1:  # Первые 13 слоёв и Detect Head
+            if (freeze_backbone and is_backbone) or (freeze_neck and is_neck) or (freeze_head and is_head):
                 for param in layer.parameters():
                     param.requires_grad = False
-        
+
+
         # Подсчёт замороженных/обучаемых параметров
         frozen_params = sum(p.numel() for p in model_detector.parameters() if not p.requires_grad)
         trainable_params = sum(p.numel() for p in model_detector.parameters() if p.requires_grad)
-        log_event(f'Замороженные параметры: \033[33m{frozen_params:,}\033[0m', level='INFO')
+        log_event(f'Замороженные параметры: \033[36m{frozen_params:,}\033[0m', level='INFO')
         log_event(f'Обучаемые параметры: \033[32m{trainable_params:,}\033[0m', level='INFO')
-    
+        log_event(f'Статусы обучения | \033[34mBackbone\033[0m: {not freeze_backbone}; \033[35mNeck\033[0m: {not freeze_neck}; \033[31mHead\033[0m: {not freeze_head}', level='WARNING')
+
     model_detector.to(env.device)
     loss_func = v8DetectionLoss(model_detector)
     hyp = SimpleNamespace(box=7.5, cls=0.5, dfl=1.5)
     loss_func.hyp = hyp
 
-    opt = AdamW(model_detector.parameters(), lr=0.00075, weight_decay=5e-4)
-    # lr_sched = MultiStepLR(opt, milestones=[5, 35, 50], gamma=0.1) # Обязательно сменить подход сбора last_lr при смене планировщика!
+    if pretrained_weights:
+        param_list = []
+        if not freeze_backbone:
+            backbone_params = []
+            for layer in model_detector.model[:10]:
+                backbone_params.extend(layer.parameters())
+            param_list.append(
+                {"params": backbone_params, 'lr': 0.00075}
+            )
+        if not freeze_neck:
+            neck_params = []
+            for layer in model_detector.model[10:len(model_detector.model) - 1]:
+                neck_params.extend(layer.parameters())
+            param_list.append(
+                {"params": neck_params, 'lr': 0.00180}
+            )
+        if not freeze_head:
+            param_list.append(
+                {"params": list(model_detector.model[-1].parameters()), 'lr': 0.002}
+            )
+        opt = AdamW(param_list, weight_decay=5e-4)
+    else:
+        opt = AdamW(model_detector.parameters(), lr=0.00075, weight_decay=5e-4)
+
+        # lr_sched = MultiStepLR(opt, milestones=[5, 35, 50], gamma=0.1) # Обязательно сменить подход сбора last_lr при смене планировщика!
     lr_sched = OneCycleLR(
         opt,
         max_lr=0.001,
@@ -371,10 +400,10 @@ def train_run(
     log_event(f'\033[34m{'>>>' * 10} Обучение завершено {'<<<' * 10}\033[0m')
 
 if __name__ == '__main__':
-    epochs = 70
+    epochs = 100
     img_size = 1280
     # models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
-    models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / 'fine_tuning_last_10_v1' # 57 эпоха. Смысл закончился потом
+    models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / 'transfer_learning_neck_head_160_trainval'
 
 
     "IAM Handwrite Dataset"
@@ -382,12 +411,12 @@ if __name__ == '__main__':
     # val_dset_obj = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'val', 'val', img_size)
 
     "HWR200 Dataset"
-    train_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '25_samples' / 'train', 'train', img_size=img_size)
-    val_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '25_samples' / 'val', 'val', img_size=img_size)
+    train_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '160_trainval' / 'train', 'train', img_size=img_size)
+    val_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '160_trainval' / 'val', 'val', img_size=img_size)
 
-    transfer_learning_weights = WORKDIR / 'ml/detector/model_weights/fine_tuning_head_only_v3/model_detector15.pt'
+    transfer_learning_weights = WORKDIR / 'ml/detector/model_weights/production_weights_v2/model_detector52.pt'
     train_run(
         train_dset_obj, val_dset_obj, models_dir,
-        pretrained_weights=transfer_learning_weights, freeze_backbone=True,
+        pretrained_weights=transfer_learning_weights,
         epochs=epochs,
     )

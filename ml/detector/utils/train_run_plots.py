@@ -1,6 +1,7 @@
 """
 Функции для графиков по лоссам и метрикам
 """
+import os.path
 
 from ml.base_utils import plot_curves
 
@@ -66,28 +67,28 @@ def plot_loss_dynamics(history_arg, save_path=None, show=False):
         curves=curves_total_losses,
         title="Validation Dynamics",
         ylabel="Loss",
-        save_path=save_path,
+        save_path=f'{os.path.splitext(save_path)[0]}_total.png',
         show=show
     )
     plot_curves(
         curves=curves_box_losses,
         title="Box Loss Dynamics",
         ylabel="Loss",
-        save_path=save_path,
+        save_path=f'{os.path.splitext(save_path)[0]}_box.png',
         show=show
     )
     plot_curves(
         curves=curves_cls_losses,
         title="Cls Loss Dynamics",
         ylabel="Loss",
-        save_path=save_path,
+        save_path=f'{os.path.splitext(save_path)[0]}_cls.png',
         show=show
     )
     plot_curves(
         curves=curves_dfl_losses,
         title="DFL Loss Dynamics",
         ylabel="Loss",
-        save_path=save_path,
+        save_path=f'{os.path.splitext(save_path)[0]}_dfl.png',
         show=show
     )
 

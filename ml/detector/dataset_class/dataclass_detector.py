@@ -9,7 +9,7 @@ from PIL import Image
 from torch import nn
 from torch.utils.data import Dataset
 from torchvision import tv_tensors
-from torchvision.transforms import v2
+from torchvision.transforms import v2, InterpolationMode
 
 from ml.logger_config import log_event
 
@@ -44,7 +44,11 @@ class DetectorAugment(nn.Module):
         torch_transforms = [
             v2.ToImage(),
             v2.ToDtype(dtype=torch.uint8, scale=True),
-            v2.Resize((img_size, img_size)),  # bbox автоматически масштабируются
+            v2.Resize(
+                (img_size, img_size),
+                interpolation=InterpolationMode.BILINEAR,
+                antialias=True,
+            ),
         ]
         
         if mode == 'train':
