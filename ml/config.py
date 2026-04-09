@@ -66,7 +66,9 @@ class Settings(BaseSettings):
         
     max_det: int  # Максимум детекций для detector в OCRModel
     word_batch_size: int = 32
-    
+
+    cvat_admin_username: str
+    cvat_admin_passw: str
     app_mode: AppMode
     domain: str
     trusted_proxies: set[str] = {"127.0.0.1", "172.18.0.1"}

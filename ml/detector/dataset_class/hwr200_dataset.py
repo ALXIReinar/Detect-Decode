@@ -34,6 +34,8 @@ class HWR200DetectorDataset(Dataset):
         """
         CVAT разметка ultralytics yolo detection 1.0 format автоматически формирует train.txt с относительными путями до изображений
         Можно упростить create_data. Можно читать train.txt и подменять image-семплы на .txt аннотации(один цикл вместо 4х)
+
+        Или таргеты в формате CVAT Images 1.1. с абсолютными координатами
         """
         target_data = []
         skipped_samples = []
@@ -200,7 +202,7 @@ class HWR200DetectorDataset(Dataset):
 
 "Проверка семпла от подачи на вход, до подачи в модель"
 "после абсолютизации координат перед boundingBoxes, трансформаций, нормализации координат в collate_fn)"
-# dset = HWR200DetectorDataset(WORKDIR / 'dataset/HWR200/25_samples/sanity_check', 'val', img_size=1280)#
+# dset = HWR200DetectorDataset(WORKDIR / 'dataset/HWR200/mobile_net_crops/core', 'val', img_size=1280)
 # # Проверяем формат bbox ДО collate_fn
 # sample0 = dset[0]
 # img0, target0 = sample0
