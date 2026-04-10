@@ -11,7 +11,7 @@ from ultralytics.utils.ops import xywh2xyxy
 
 from ml.config import WORKDIR, env
 from ml.logger_config import log_event
-from ml.crop_refiner.models import Extent2CoreRefiner, IoULoss
+from ml.crop_refiner.models import Extent2CoreRefiner, IoULoss, CIoULoss
 from ml.crop_refiner.dataset_class import CropRefinerDataset
 
 
@@ -40,7 +40,7 @@ def main():
     batch_size = 128
     epochs = 60
     lr = 1e-3
-    freeze_epochs = 15  # Количество эпох с замороженным backbone
+    freeze_epochs = 10  # Количество эпох с замороженным backbone
     backbone_lr_multiplier = 0.1
     
     # Разделение датасета: 70% train, 15% val, 15% test
@@ -124,6 +124,7 @@ def main():
     model = Extent2CoreRefiner().to(env.device)
     
     loss_func = IoULoss("XYXY")
+    # loss_func = CIoULoss("XYXY")
     if freeze_epochs:
         # собираем все веса
         backbone_params = model.backbone.parameters()
@@ -151,9 +152,9 @@ def main():
     
     # ==================== Обучение ====================
     best_val_iou = 0.0
+    best_val_loss = 999.0
     best_weights = ''
     thres_val = 0.02
-    best_epoch = 0
     train_loss_list, train_iou_list, val_loss_list, val_iou_list, lr_list = [], [], [], [], []
 
     
@@ -246,8 +247,9 @@ def main():
 
         
         # Сохранение лучшей модели
-        if val_iou > best_val_iou + best_val_iou * thres_val:
+        if val_loss < best_val_loss + best_val_loss * thres_val:
             best_val_iou = val_iou
+            best_val_loss = val_loss
             best_weights = f'crop_refiner{epoch}.pt'
 
             history = {

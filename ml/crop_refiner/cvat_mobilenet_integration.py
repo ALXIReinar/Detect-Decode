@@ -1,4 +1,5 @@
-import io
+import tempfile
+from pathlib import Path
 
 import cv2
 import torch
@@ -6,7 +7,7 @@ import numpy as np
 import albumentations as A
 from PIL import Image
 from albumentations.pytorch import ToTensorV2
-from cvat_sdk.api_client import ApiClient, Configuration
+from cvat_sdk import make_client
 from tqdm import tqdm
 
 from ml.config import WORKDIR, env
@@ -15,8 +16,8 @@ from ml.logger_config import log_event
 
 # --- НАСТРОЙКИ ---
 cvat_url = 'http://localhost:8080'
-task_id = 7
-model_path = WORKDIR / 'ml' / 'crop_refiner' / 'model_weights' / 'cvat_weights' / 'crop_refiner11.pt'
+task_id = 6
+model_path = WORKDIR / 'ml' / 'crop_refiner' / 'model_weights' / 'cvat_weights' / 'crop_refiner11_giou_loss.pt'
 
 transforms = A.Compose([
     A.LongestMaxSize(max_size=128),
@@ -30,82 +31,198 @@ def preprocess_crop(img_rgb):
     return transforms(image=img_rgb)['image'].unsqueeze(0).to(env.device)
 
 # Загружаем модель
+log_event("Загрузка модели...")
 model = Extent2CoreRefiner().to(env.device)
 model_weights = torch.load(model_path, map_location=env.device, weights_only=False)['model_state_dict']
 model.load_state_dict(model_weights)
 model.eval()
 
 
-with ApiClient(Configuration(host=cvat_url, username=env.cvat_admin_username, password=env.cvat_admin_passw)) as client:
-    meta = client.tasks_api.retrieve_data(task_id, type="frame")
-
-    # Создаем маппинг {frame_id: filename}
+# Используем High-level API (cvat_sdk 2.x)
+with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_passw)) as client:
+    # Получаем task объект
+    task = client.tasks.retrieve(task_id)
+    log_event(f"Task: {task.name} (ID: {task.id}), Size: {task.size} frames")
+    
+    # Получаем метаданные для маппинга frame_id -> filename
+    meta = task.get_meta()
     id_to_filename = {i: frame.name for i, frame in enumerate(meta.frames)}
-
-    # 2. Получаем аннотации
-    annotations = client.tasks_api.retrieve_annotations(task_id)
-
-    # Определяем, какие файлы мы хотим обработать (например, только конкретного автора)
-    # Можно фильтровать по подстроке в пути: "author_001" или по списку
+    
+    # Получаем аннотации
+    annotations = task.get_annotations()
+    log_event(f"Всего shapes: {len(annotations.shapes)}")
+    
+    # Фильтр по названию файла
     TARGET_SUBSTRING = "14"  # Пример фильтра
 
     shapes_by_frame = {}
+    filtered_shapes_count = 0
     for shape in annotations.shapes:
         if shape.type.value == 'rectangle':
             frame_name = id_to_filename[shape.frame]
 
             # ФИЛЬТРАЦИЯ: обрабатываем только если имя файла подходит
-            if TARGET_SUBSTRING not in frame_name:
+            if TARGET_SUBSTRING in frame_name:
                 shapes_by_frame.setdefault(shape.frame, []).append(shape)
-
-    print(f"Найдено {len(shapes_by_frame)} подходящих кадров.")
-
-    for frame_id, shapes in shapes_by_frame.items():
-        # ИСПРАВЛЕННЫЙ МЕТОД: в 2.x используем retrieve_data
-        # type="frame" и quality="original" (или "compressed")
-        frame_data, _ = client.tasks_api.retrieve_data(
-            id=task_id,
-            type="frame",
-            number=frame_id,
+                filtered_shapes_count += 1
+    
+    log_event(f"Найдено {len(shapes_by_frame)} подходящих кадров после фильтрации")
+    log_event(f"Будет обработано {filtered_shapes_count} shapes из {len(annotations.shapes)} всего")
+    
+    # Создаём временную директорию для скачивания фреймов
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Скачиваем нужные фреймы
+        frame_ids = list(shapes_by_frame.keys())
+        log_event(f"Скачивание {len(frame_ids)} фреймов...")
+        task.download_frames(
+            frame_ids=frame_ids,
+            outdir=temp_path,
             quality="original"
         )
-
-        # Читаем байты (retrieve_data возвращает BufferedReader)
-        image = Image.open(io.BytesIO(frame_data.read()))
-        image = np.array(image.convert('RGB'))
-        h_img, w_img = image.shape[:2]
-
-        for shape in shapes:
-            # shape.points в SDK — это список [x1, y1, x2, y2]
-            x1, y1, x2, y2 = shape.points
-
-            crop = image[int(max(0, y1)):int(min(h_img, y2)), int(max(0, x1)):int(min(w_img, x2))]
-            if crop.size == 0: continue
-
-            h_ext, w_ext = crop.shape[:2]
-
-            # 3. Инференс
-            input_tensor = preprocess_crop(crop)
-            with torch.no_grad():
-                pred = model(input_tensor).cpu().numpy()[0]
-                nx, ny, nw, nh = pred
-
-            # 4. Пересчет координат
-            abs_cx = x1 + (nx * w_ext)
-            abs_cy = y1 + (ny * h_ext)
-            abs_w = nw * w_ext
-            abs_h = nh * h_ext
-
-            # Обновляем точки в объекте
-            shape.points = [
-                abs_cx - abs_w / 2,
-                abs_cy - abs_h / 2,
-                abs_cx + abs_w / 2,
-                abs_cy + abs_h / 2
-            ]
-
-    # 5. Пушим обновление. В v2.x используем PATCH или PUT
-    # Нам нужно передать объект LabeledData обратно
-    client.tasks_api.update_annotations(task_id, annotations)
-
-    log_event("Готово! Пора в CVAT", level='WARNING')
+        
+        # Проверяем, что реально скачалось
+        downloaded_files = list(temp_path.glob("*"))
+        log_event(f"Скачано файлов: {len(downloaded_files)}")
+        if downloaded_files:
+            log_event(f"Примеры скачанных файлов: {[f.name for f in downloaded_files[:3]]}")
+        
+        # Создаём маппинг frame_id -> скачанный файл
+        # download_frames сохраняет файлы как frame_<id>.<ext>
+        frame_id_to_file = {}
+        for file_path in downloaded_files:
+            # Пытаемся извлечь frame_id из имени файла
+            # Формат может быть: frame_000123.jpg или просто 123.jpg
+            stem = file_path.stem
+            if stem.startswith('frame_'):
+                try:
+                    fid = int(stem.split('_')[1])
+                    frame_id_to_file[fid] = file_path
+                except (ValueError, IndexError):
+                    pass
+            else:
+                # Пробуем просто как число
+                try:
+                    fid = int(stem)
+                    frame_id_to_file[fid] = file_path
+                except ValueError:
+                    pass
+        
+        log_event(f"Распознано frame_id для {len(frame_id_to_file)} файлов")
+        
+        # Обрабатываем каждый фрейм
+        for frame_id, shapes in tqdm(shapes_by_frame.items(), desc="Processing frames"):
+            # Ищем скачанный файл по frame_id
+            if frame_id not in frame_id_to_file:
+                frame_filename = id_to_filename[frame_id]
+                log_event(f"Файл для frame_id={frame_id} ({frame_filename}) не найден в скачанных", level='WARNING')
+                continue
+            
+            frame_path = frame_id_to_file[frame_id]
+            
+            image = Image.open(frame_path).convert('RGB')
+            image = np.array(image)
+            h_img, w_img = image.shape[:2]
+            
+            for shape in shapes:
+                # shape.points в SDK — это список [x1, y1, x2, y2]
+                x1, y1, x2, y2 = shape.points
+                
+                crop = image[int(max(0, y1)):int(min(h_img, y2)), int(max(0, x1)):int(min(w_img, x2))]
+                if crop.size == 0:
+                    continue
+                
+                h_ext, w_ext = crop.shape[:2]
+                
+                # Инференс
+                input_tensor = preprocess_crop(crop)
+                with torch.no_grad():
+                    pred = model(input_tensor).cpu().numpy()[0]
+                    nx, ny, nw, nh = pred
+                
+                # Пересчет координат
+                abs_cx = x1 + (nx * w_ext)
+                abs_cy = y1 + (ny * h_ext)
+                abs_w = nw * w_ext
+                abs_h = nh * h_ext
+                
+                # Обновляем точки в объекте
+                float_points = list(map(float, [
+                    abs_cx - abs_w / 2,
+                    abs_cy - abs_h / 2,
+                    abs_cx + abs_w / 2,
+                    abs_cy + abs_h / 2
+                ]))
+                shape.points = float_points
+    
+    # Обновляем аннотации на сервере (заменяем все аннотации)
+    log_event("Обновление аннотаций на сервере...")
+    
+    # Конвертируем LabeledData в LabeledDataRequest
+    from cvat_sdk import models
+    
+    # Преобразуем shapes в LabeledShapeRequest
+    shapes_request = []
+    for shape in annotations.shapes:
+        shapes_request.append(
+            models.LabeledShapeRequest(
+                type=shape.type,
+                frame=shape.frame,
+                label_id=shape.label_id,
+                points=shape.points,
+                attributes=shape.attributes if hasattr(shape, 'attributes') else [],
+                occluded=shape.occluded if hasattr(shape, 'occluded') else False,
+                outside=shape.outside if hasattr(shape, 'outside') else False,
+                z_order=shape.z_order if hasattr(shape, 'z_order') else 0,
+                rotation=shape.rotation if hasattr(shape, 'rotation') else 0.0,
+            )
+        )
+    
+    # Преобразуем tags в LabeledImageRequest
+    tags_request = []
+    for tag in annotations.tags:
+        tags_request.append(
+            models.LabeledImageRequest(
+                frame=tag.frame,
+                label_id=tag.label_id,
+                attributes=tag.attributes if hasattr(tag, 'attributes') else []
+            )
+        )
+    
+    # Преобразуем tracks в LabeledTrackRequest
+    tracks_request = []
+    for track in annotations.tracks:
+        track_shapes = []
+        for shape in track.shapes:
+            track_shapes.append(
+                models.TrackedShapeRequest(
+                    type=shape.type,
+                    frame=shape.frame,
+                    points=shape.points,
+                    attributes=shape.attributes if hasattr(shape, 'attributes') else [],
+                    occluded=shape.occluded if hasattr(shape, 'occluded') else False,
+                    outside=shape.outside if hasattr(shape, 'outside') else False,
+                    z_order=shape.z_order if hasattr(shape, 'z_order') else 0,
+                    rotation=shape.rotation if hasattr(shape, 'rotation') else 0.0,
+                )
+            )
+        tracks_request.append(
+            models.LabeledTrackRequest(
+                label_id=track.label_id,
+                frame=track.frame,
+                shapes=track_shapes,
+                attributes=track.attributes if hasattr(track, 'attributes') else []
+            )
+        )
+    
+    # Создаём LabeledDataRequest
+    labeled_data_request = models.LabeledDataRequest(
+        shapes=shapes_request,
+        tags=tags_request,
+        tracks=tracks_request
+    )
+    
+    task.set_annotations(labeled_data_request)
+    
+    log_event("Готово! Пора в CVAT", level='INFO')
