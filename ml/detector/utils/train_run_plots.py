@@ -52,12 +52,12 @@ def plot_loss_dynamics(history_arg, save_path=None, show=False):
     curves_dfl_losses = [
         {
             "label": "DFL Val Loss",
-            "values": val_cls_losses,
+            "values": val_dfl_losses,
             "color": "#3498DB"  # Синий
         },
         {
             "label": "DFL Train Loss",
-            "values": train_cls_losses,
+            "values": train_dfl_losses,
             "color": "#2ECC71"  # Зелёный
         },
     ]

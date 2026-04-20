@@ -77,7 +77,7 @@ def train_run(
 
 
     "Transfer Learning"
-    freeze_backbone, freeze_neck, freeze_head = True, False, False
+    freeze_backbone, freeze_neck, freeze_head = False, False, False
 
     if pretrained_weights:
         if os.path.exists(pretrained_weights):
@@ -137,7 +137,7 @@ def train_run(
             )
         opt = AdamW(param_list, weight_decay=5e-4)
     else:
-        opt = AdamW(model_detector.parameters(), lr=0.00075, weight_decay=5e-4)
+        opt = AdamW(model_detector.parameters(), lr=0.001, weight_decay=5e-4)
 
         # lr_sched = MultiStepLR(opt, milestones=[5, 35, 50], gamma=0.1) # Обязательно сменить подход сбора last_lr при смене планировщика!
     lr_sched = OneCycleLR(
@@ -151,7 +151,8 @@ def train_run(
 
 
     early_stopping_mode = True
-    threshold_loss = 0.01
+    threshold_loss, threshold_metric = 0.01, 0.05 # агрессивный порог в начале
+    max_metric = 0.00
     early_stopping = 20
     models_dir.mkdir(parents=True, exist_ok=True)
 
@@ -168,6 +169,10 @@ def train_run(
     iouv = torch.linspace(0.5, 0.95, 10).to(env.device)
 
     for epoch in range(1, epochs + 1):
+
+        "Управление порогом улучшения метрики"
+        if epoch > (epochs * 0.8):  # Последние 20% эпох сохраняем при малейшем улучшении
+            threshold_metric = 0.02
 
         model_detector.train()
 
@@ -353,9 +358,12 @@ def train_run(
         }
 
         "Сохраняем модель, как только виднеется прогресс"
-        min_loss = last_losses_val[-1] if min_loss is None else min_loss
-        if min_loss - min_loss * threshold_loss > last_losses_val[-1]:
-            min_loss = last_losses_val[-1]
+        # min_loss = last_losses_val[-1] if min_loss is None else min_loss
+        cur_metric = (map5095 + map50) / 2
+        if cur_metric * threshold_metric + cur_metric > max_metric:
+        # if min_loss - min_loss * threshold_loss > last_losses_val[-1]:
+        #     min_loss = last_losses_val[-1]
+            max_metric = cur_metric
 
             checkpoint = {
                 'model_code': model_detector_code,
@@ -366,7 +374,7 @@ def train_run(
                 'img_size': img_size,
                 'history': history,
             }
-            save_path = models_dir.joinpath(f'model_detector{epoch}.pt')
+            save_path = str(models_dir.joinpath(f'model_detector{epoch}.pt'))
             try:
                 tmp_file = models_dir.joinpath(f'model_detector{epoch}.tmp')
                 torch.save(checkpoint, save_path)
@@ -388,7 +396,7 @@ def train_run(
             log_event(f'\033[31m{'!!!' * 10} Принудительная остановка обучения, нет прогресса {'!!!' * 10}\033[0m', level='WARNING')
             plot_loss_dynamics(history, models_dir / 'loss_distribution.png')
             plot_metrics_dynamics(history, models_dir / 'metrics.png')
-            plot_lr_chronology(history, models_dir / 'chronology.png')
+            plot_lr_chronology(history, models_dir / 'lr_chronology.png')
             raise Exception("Early Stopping")
 
         plateau_loss_epochs += 1
@@ -400,10 +408,10 @@ def train_run(
     log_event(f'\033[34m{'>>>' * 10} Обучение завершено {'<<<' * 10}\033[0m')
 
 if __name__ == '__main__':
-    epochs = 100
+    epochs = 60
     img_size = 1280
     # models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / f'{datetime.now().strftime("%Y%m%d-%H%M%S")}'
-    models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / 'transfer_learning_neck_head_160_trainval'
+    models_dir = WORKDIR / 'ml' / 'detector' / 'model_weights' / 'transfer_learning_core_bounding_v1'
 
 
     "IAM Handwrite Dataset"
@@ -411,12 +419,12 @@ if __name__ == '__main__':
     # val_dset_obj = OCRDetectorDataset(WORKDIR / 'dataset' / 'iam-form-stratified' / 'val', 'val', img_size)
 
     "HWR200 Dataset"
-    train_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '160_trainval' / 'train', 'train', img_size=img_size)
-    val_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / '160_trainval' / 'val', 'val', img_size=img_size)
+    train_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / 'simplified' / 'train_248', 'train', img_size=img_size)
+    val_dset_obj = HWR200DetectorDataset(WORKDIR / 'dataset' / 'HWR200' / 'simplified' / 'val_60', 'val', img_size=img_size)
 
     transfer_learning_weights = WORKDIR / 'ml/detector/model_weights/production_weights_v2/model_detector52.pt'
     train_run(
         train_dset_obj, val_dset_obj, models_dir,
-        pretrained_weights=transfer_learning_weights,
+        # pretrained_weights=transfer_learning_weights,
         epochs=epochs,
     )

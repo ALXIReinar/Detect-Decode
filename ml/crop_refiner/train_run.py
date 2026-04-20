@@ -11,7 +11,7 @@ from ultralytics.utils.ops import xywh2xyxy
 
 from ml.config import WORKDIR, env
 from ml.logger_config import log_event
-from ml.crop_refiner.models import Extent2CoreRefiner, IoULoss, CIoULoss
+from ml.crop_refiner.models import Extent2CoreMobileNetRefiner, IoULoss, CIoULoss, Extent2CoreResnetRefiner
 from ml.crop_refiner.dataset_class import CropRefinerDataset
 
 
@@ -23,12 +23,6 @@ def freeze_backbone(model):
     log_event("Backbone заморожен")
 
 
-def unfreeze_backbone(model):
-    """Размораживает backbone модели."""
-    for param in model.backbone.parameters():
-        param.requires_grad = True
-    log_event("\033[31mBackbone разморожен\033[0m")
-
 
 def main():
     # ==================== Гиперпараметры ====================
@@ -38,9 +32,13 @@ def main():
     models_dir.mkdir(parents=True)
     
     batch_size = 128
-    epochs = 60
+    epochs = 50
     lr = 1e-3
-    freeze_epochs = 10  # Количество эпох с замороженным backbone
+    freeze_epochs = True  # Количество эпох с замороженным backbone
+    unfreeze_inp = 20
+    unfreeze_layer_1_2 = 16
+    unfreeze_layer_3 = 13
+    unfreeze_layer_4 = 10
     backbone_lr_multiplier = 0.1
     
     # Разделение датасета: 70% train, 15% val, 15% test
@@ -121,18 +119,19 @@ def main():
     
     # ==================== Модель, Loss, Optimizer ====================
     log_event("Инициализация модели...")
-    model = Extent2CoreRefiner().to(env.device)
-    
+    model = Extent2CoreResnetRefiner().to(env.device)
+    # model = Extent2CoreMobileNetRefiner().to(env.device)
+
     loss_func = IoULoss("XYXY")
     # loss_func = CIoULoss("XYXY")
     if freeze_epochs:
         # собираем все веса
         backbone_params = model.backbone.parameters()
-        other_params = list(model.pool.parameters()) + list(model.regressor.parameters())
+        head_params = model.head.parameters()
 
         opt = torch.optim.AdamW([
             {'params': backbone_params, 'lr': lr * backbone_lr_multiplier},
-            {'params': other_params, 'lr': lr},
+            {'params': head_params, 'lr': lr},
         ], weight_decay=5e-4)
     else:
         opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=5e-4)
@@ -161,9 +160,30 @@ def main():
     log_event("Начало обучения...")
     
     for epoch in range(1, epochs + 1):
-        # Размораживаем backbone после FREEZE_EPOCHS
-        if epoch == freeze_epochs + 1:
-            unfreeze_backbone(model)
+        # layer 4
+        if epoch == unfreeze_layer_4 + 1:
+            for param in model.backbone.layer4.parameters():
+                param.requires_grad = True
+            log_event("\033[35mlayer4 разморожен\033[0m ")
+        # layer 3
+        if epoch == unfreeze_layer_3 + 1:
+            for param in model.backbone.layer3.parameters():
+                param.requires_grad = True
+            log_event("\033[33mlayer3 разморожен\033[0m ")
+        # layer 1,2
+        if epoch == unfreeze_layer_1_2 + 1:
+            for param in model.backbone.layer2.parameters():
+                param.requires_grad = True
+            for param in model.backbone.layer1.parameters():
+                param.requires_grad = True
+            log_event("\033[32mlayer1 разморожен\033[0m ")
+            log_event("\033[31mlayer2 разморожен\033[0m ")
+        # Input conv, bn
+        if epoch == unfreeze_inp + 1:
+            for param in model.backbone.parameters():
+                param.requires_grad = True
+            log_event("\033[37minput разморожен\033[0m ")
+
 
         model.train()
         running_loss = 0.0
@@ -247,8 +267,7 @@ def main():
 
         
         # Сохранение лучшей модели
-        if val_loss < best_val_loss + best_val_loss * thres_val:
-            best_val_iou = val_iou
+        if val_loss < best_val_loss - best_val_loss * thres_val:
             best_val_loss = val_loss
             best_weights = f'crop_refiner{epoch}.pt'
 

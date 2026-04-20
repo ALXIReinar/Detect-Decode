@@ -1,4 +1,6 @@
 import os.path
+import shutil
+from collections import defaultdict
 from pathlib import Path
 from typing import Literal
 
@@ -91,7 +93,7 @@ class HWR200DetectorDataset(Dataset):
 
         skip_len = len(skipped_samples)
         if skip_len > 0:
-            log_event(f'Не найдены аннотации на \033[31m{skip_len}\033[0m | {skipped_samples}', level='CRITICAL')
+            log_event(f'Не найдены аннотации на \033[31m{skip_len}\033[0m | {skipped_samples[:10]}...', level='CRITICAL')
 
             if self.raise_if_unexists_annotations:
                 raise RuntimeError('Не все изображения имеют текстовые аннотации')
@@ -200,6 +202,60 @@ class HWR200DetectorDataset(Dataset):
         
         return images, targets
 
+    def mix_general2trainval(self, train_count: int, val_count: int):
+        "Не забыть убрать 2 семпла из валидации на время обучения, чтобы получить 248/60 и 4 батча в трейн/вал!!!"
+
+        "Создаём папки"
+        rel_target_path = self.path.parent
+        train_dir, val_dir = rel_target_path / 'train', rel_target_path / 'val'
+        train_dir.mkdir(exist_ok=True, parents=True)
+        val_dir.mkdir(exist_ok=True, parents=True)
+
+        author_map = {}
+        train_len, val_len = 0, 0
+
+        for sample in self.data[::-1]: # реверс, чтобы в трейне были семплы, полностью заполненные текстом
+
+            img_sample = sample['photo_path']
+            bboxes_path = Path(f"{os.path.splitext(img_sample)[0]}{'.txt'}")
+
+            rel_img, rel_txt = img_sample.relative_to(rel_target_path / 'raw' ), bboxes_path.relative_to(rel_target_path / 'raw') # костыль "/raw" для корректного относительного пути семпла
+
+            author_id = int(img_sample.parent.parent.parent.stem)
+            author_map[author_id] = author_map.get(author_id, 0)
+
+
+            train_dir / rel_img
+            "Перемещаем семпл"
+            if train_len < train_count and author_map[author_id] > 0:
+
+                (train_dir / rel_img.parent).mkdir(exist_ok=True, parents=True) # воссоздаём структуру в новой выборке
+
+                # заполняем трейн, если в валидации есть хотя бы один семпл этого автора
+                shutil.move(img_sample, train_dir / rel_img)
+                shutil.move(bboxes_path, train_dir / rel_txt)
+                train_len += 1
+
+            elif val_len < val_count:
+                (val_dir / rel_img.parent).mkdir(exist_ok=True, parents=True) # воссоздаём структуру в новой выборке
+
+                shutil.move(img_sample, val_dir / rel_img)
+                shutil.move(bboxes_path, val_dir / rel_txt)
+                val_len += 1
+
+            else:
+                (train_dir / rel_img.parent).mkdir(exist_ok=True, parents=True) # воссоздаём структуру в новой выборке
+
+                shutil.move(img_sample, train_dir / rel_img)
+                shutil.move(bboxes_path, train_dir / rel_txt)
+                train_len += 1
+
+            author_map[author_id] += 1
+
+        log_event(f"Попало в валидацию: \033[35m{val_count}\033[0m")
+        log_event(f"Попало в тренировку: \033[33m{train_count}\033[0m")
+
+
 "Проверка семпла от подачи на вход, до подачи в модель"
 "после абсолютизации координат перед boundingBoxes, трансформаций, нормализации координат в collate_fn)"
 # dset = HWR200DetectorDataset(WORKDIR / 'dataset/HWR200/mobile_net_crops/core', 'val', img_size=1280)
@@ -256,5 +312,14 @@ class HWR200DetectorDataset(Dataset):
 #
 # visualize_bboxes(sample, target['boxes'], show=True)
 
-# dset = HWR200DetectorDataset(WORKDIR / 'dataset/HWR200/160_trainval/train', 'train', img_size=1280, raise_mismatch_samples=False)
+# dset = HWR200DetectorDataset(WORKDIR / 'dataset/HWR200/simplified/train_248', 'train', img_size=1280, raise_mismatch_samples=False)
 # log_event(len(dset))
+# dset = HWR200DetectorDataset(WORKDIR / 'dataset/HWR200/simplified/val_60', 'train', img_size=1280, raise_mismatch_samples=False)
+# log_event(len(dset))
+
+
+# HWR200DetectorDataset(
+#
+#     WORKDIR / 'dataset/HWR200/simplified/raw', 'train', img_size=1280, raise_mismatch_samples=False
+#
+# ).mix_general2trainval(248, 62)

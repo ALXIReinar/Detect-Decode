@@ -2,13 +2,14 @@ import math
 from typing import Literal
 
 import torch
-from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights
+from torchvision.models import mobilenet_v3_small, MobileNet_V3_Small_Weights, resnet18, ResNet18_Weights
 from torch import nn
 from ultralytics.utils.metrics import box_iou
 from ultralytics.utils.ops import xywh2xyxy
 
 
-class Extent2CoreRefiner(nn.Module):
+
+class Extent2CoreMobileNetRefiner(nn.Module):
     def __init__(self):
         super().__init__()
         self.backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT).features
@@ -24,6 +25,26 @@ class Extent2CoreRefiner(nn.Module):
         x = self.backbone(x)
         x = self.pool(x).flatten(1)
         return self.regressor(x)
+
+
+class Extent2CoreResnetRefiner(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.backbone = resnet18(weights=ResNet18_Weights.DEFAULT)
+        self.backbone.fc = nn.Identity()
+
+        self.head = nn.Sequential(
+            nn.Linear(512, 128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.2),
+            nn.Linear(128, 4),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, x):
+        x = self.backbone(x)
+        return self.head(x)
+
 
 
 class IoULoss(nn.Module):

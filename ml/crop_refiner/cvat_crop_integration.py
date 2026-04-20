@@ -11,17 +11,16 @@ from cvat_sdk import make_client
 from tqdm import tqdm
 
 from ml.config import WORKDIR, env
-from ml.crop_refiner.models import Extent2CoreRefiner
+from ml.crop_refiner.models import Extent2CoreMobileNetRefiner, Extent2CoreResnetRefiner
 from ml.logger_config import log_event
 
 # --- НАСТРОЙКИ ---
 cvat_url = 'http://localhost:8080'
-task_id = 6
-model_path = WORKDIR / 'ml' / 'crop_refiner' / 'model_weights' / 'cvat_weights' / 'crop_refiner11_giou_loss.pt'
+job_id = 2  # Используем job_id вместо task_id
+model_path = WORKDIR / 'ml' / 'crop_refiner' / 'model_weights' / 'cvat_weights' / 'crop_refiner14.pt'
 
 transforms = A.Compose([
-    A.LongestMaxSize(max_size=128),
-    A.PadIfNeeded(min_height=128, min_width=128, border_mode=cv2.BORDER_CONSTANT, fill=(255, 255, 255)),
+    A.Resize(height=128, width=512),
     A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     ToTensorV2()
 ])
@@ -32,7 +31,7 @@ def preprocess_crop(img_rgb):
 
 # Загружаем модель
 log_event("Загрузка модели...")
-model = Extent2CoreRefiner().to(env.device)
+model = Extent2CoreResnetRefiner().to(env.device)
 model_weights = torch.load(model_path, map_location=env.device, weights_only=False)['model_state_dict']
 model.load_state_dict(model_weights)
 model.eval()
@@ -40,20 +39,20 @@ model.eval()
 
 # Используем High-level API (cvat_sdk 2.x)
 with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_passw)) as client:
-    # Получаем task объект
-    task = client.tasks.retrieve(task_id)
-    log_event(f"Task: {task.name} (ID: {task.id}), Size: {task.size} frames")
+    # Получаем job объект вместо task
+    job = client.jobs.retrieve(job_id)
+    log_event(f"Job: {job.id}, Task: {job.task_id}, Frames: {job.start_frame}-{job.stop_frame}")
     
     # Получаем метаданные для маппинга frame_id -> filename
-    meta = task.get_meta()
+    meta = job.get_meta()
     id_to_filename = {i: frame.name for i, frame in enumerate(meta.frames)}
     
-    # Получаем аннотации
-    annotations = task.get_annotations()
+    # Получаем аннотации job'а
+    annotations = job.get_annotations()
     log_event(f"Всего shapes: {len(annotations.shapes)}")
     
     # Фильтр по названию файла
-    TARGET_SUBSTRING = "14"  # Пример фильтра
+    target_substring = "HWR200/simplified/"  # Пример фильтра
 
     shapes_by_frame = {}
     filtered_shapes_count = 0
@@ -62,7 +61,7 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
             frame_name = id_to_filename[shape.frame]
 
             # ФИЛЬТРАЦИЯ: обрабатываем только если имя файла подходит
-            if TARGET_SUBSTRING in frame_name:
+            if target_substring in frame_name:
                 shapes_by_frame.setdefault(shape.frame, []).append(shape)
                 filtered_shapes_count += 1
     
@@ -76,7 +75,7 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
         # Скачиваем нужные фреймы
         frame_ids = list(shapes_by_frame.keys())
         log_event(f"Скачивание {len(frame_ids)} фреймов...")
-        task.download_frames(
+        job.download_frames(
             frame_ids=frame_ids,
             outdir=temp_path,
             quality="original"
@@ -114,6 +113,9 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
         # Обрабатываем каждый фрейм
         for frame_id, shapes in tqdm(shapes_by_frame.items(), desc="Processing frames"):
             # Ищем скачанный файл по frame_id
+            if frame_id <= 1:
+                continue
+
             if frame_id not in frame_id_to_file:
                 frame_filename = id_to_filename[frame_id]
                 log_event(f"Файл для frame_id={frame_id} ({frame_filename}) не найден в скачанных", level='WARNING')
@@ -129,6 +131,8 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
                 # shape.points в SDK — это список [x1, y1, x2, y2]
                 x1, y1, x2, y2 = shape.points
                 
+                # log_event(f"Frame {frame_id}, Shape ID {shape.id}: До обработки points = {shape.points}")
+                
                 crop = image[int(max(0, y1)):int(min(h_img, y2)), int(max(0, x1)):int(min(w_img, x2))]
                 if crop.size == 0:
                     continue
@@ -140,6 +144,8 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
                 with torch.no_grad():
                     pred = model(input_tensor).cpu().numpy()[0]
                     nx, ny, nw, nh = pred
+                
+                # log_event(f"Предсказание модели: cx={nx:.4f}, cy={ny:.4f}, w={nw:.4f}, h={nh:.4f}")
                 
                 # Пересчет координат
                 abs_cx = x1 + (nx * w_ext)
@@ -154,10 +160,17 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
                     abs_cx + abs_w / 2,
                     abs_cy + abs_h / 2
                 ]))
+                
+                # log_event(f"После обработки points = {float_points}")
+                # log_event(f"Изменение: Δx1={float_points[0]-x1:.2f}, Δy1={float_points[1]-y1:.2f}, Δx2={float_points[2]-x2:.2f}, Δy2={float_points[3]-y2:.2f}")
+                
                 shape.points = float_points
     
     # Обновляем аннотации на сервере (заменяем все аннотации)
     log_event("Обновление аннотаций на сервере...")
+    log_event(f"Всего shapes для отправки: {len(annotations.shapes)}")
+    log_event(f"Всего tags для отправки: {len(annotations.tags)}")
+    log_event(f"Всего tracks для отправки: {len(annotations.tracks)}")
     
     # Конвертируем LabeledData в LabeledDataRequest
     from cvat_sdk import models
@@ -223,6 +236,13 @@ with make_client(cvat_url, credentials=(env.cvat_admin_username, env.cvat_admin_
         tracks=tracks_request
     )
     
-    task.set_annotations(labeled_data_request)
+    log_event(f"Отправка {len(shapes_request)} shapes на сервер...")
     
-    log_event("Готово! Пора в CVAT", level='INFO')
+    try:
+        job.set_annotations(labeled_data_request)
+        log_event("✓ Аннотации успешно обновлены на сервере!", level='INFO')
+    except Exception as e:
+        log_event(f"✗ Ошибка при обновлении аннотаций: {e}", level='ERROR')
+        raise
+    
+    log_event("Готово! Обновите страницу в CVAT (Ctrl+R или F5)", level='INFO')

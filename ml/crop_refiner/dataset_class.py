@@ -9,11 +9,12 @@ from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
+from ml.config import WORKDIR
 from ml.logger_config import log_event
 
 
 class CropRefinerDataset(Dataset):
-    def __init__(self, data_dir: Path, target_size=(128, 128), is_train=True, auto_load=True):
+    def __init__(self, data_dir: Path, target_size=(128, 512), is_train=True, auto_load=True):
         self.data_dir = data_dir
         self.target_size = target_size
         self.is_train = is_train
@@ -36,31 +37,23 @@ class CropRefinerDataset(Dataset):
         return self
 
     def _get_transforms(self):
-        # Базовые трансформации (паддинг и ресайз)
-        transforms = []
+        target_h, target_w = 128, 512
 
+        transforms = []
         if self.is_train:
-            # Аугментации цвета/яркости (не меняют боксы)
             transforms.extend([
                 A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.05, p=0.5),
                 A.GaussianBlur(blur_limit=(3, 5), p=0.2),
-                # A.SafeRotate(limit=3, p=0.3, border_mode=cv2.BORDER_CONSTANT, value=(255, 255, 255)), # Можно добавить легкий наклон
             ])
 
-        # Сохраняем пропорции, добиваем белым фоном до квадрата
+        # Просто растягиваем/сжимаем до нужного прямоугольника.
+        # Albumentations сам ИДЕАЛЬНО пересчитает координаты боксов.
         transforms.extend([
-            A.LongestMaxSize(max_size=max(self.target_size)),
-            A.PadIfNeeded(
-                min_height=self.target_size[0],
-                min_width=self.target_size[1],
-                border_mode=cv2.BORDER_CONSTANT,
-                fill=(255, 255, 255)  # Белый паддинг
-            ),
-            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),  # ImageNet
+            A.Resize(height=target_h, width=target_w),
+            A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
             ToTensorV2()
         ])
 
-        # format='yolo' для нормализованных xywh
         return A.Compose(
             transforms,
             bbox_params=A.BboxParams(format='yolo', label_fields=['labels'])
@@ -142,7 +135,7 @@ class CropRefinerDataset(Dataset):
 
                         "Ищем Core изображение и аннотацию"
                         img_core_path = core_bounding_path / img_extent_path.relative_to(extent_bounding_path)
-                        core_bboxes_path = Path(f"{os.path.splitext(img_extent_path)[0]}{'.txt'}")
+                        core_bboxes_path = core_bounding_path / Path(f"{os.path.splitext(img_extent_path.relative_to(extent_bounding_path))[0]}{'.txt'}")
                         if not img_core_path.exists() or not core_bboxes_path.exists():
                             skipped_samples.append(img_extent_path)
                             continue
@@ -189,6 +182,8 @@ class CropRefinerDataset(Dataset):
         # 2. Нарезаем Extent кропы, сохраняем разрешение Core кропов для таргетов
         skipped_crops = 0
         crop_id = 0
+        debug_samples = 0  # Для отладки
+        
         for sample in tqdm(target_data, desc='Cropping'):
 
             skipped_crops_sample = 0
@@ -199,45 +194,172 @@ class CropRefinerDataset(Dataset):
 
             main_e_w, main_e_h = extent_img.size
             main_c_w, main_c_h = core_img.size
-
-            for extent_box, core_box in zip(sample['gt_extent_boxes'], sample['gt_core_boxes']):
+            
+            # Отладка первых нескольких сэмплов
+            for extent_box in sample['gt_extent_boxes']:
                 e_cx, e_cy, e_w_rel, e_h_rel = extent_box
-                c_cx, c_cy, c_w_rel, c_h_rel = core_box
 
-                # приводим в абсолютные координаты Extent
-                e_cx, e_cy, e_w, e_h = e_cx * main_e_w, e_cy * main_e_h, e_w_rel * main_e_w, e_h_rel * main_e_h
-                # приводим в абсолютные координаты Core
-                c_w, c_h = c_w_rel * main_c_w, c_h_rel * main_c_h
-                if c_w > e_w or c_h > e_h:
+                # Приводим в абсолютные координаты на EXTENT изображении
+                e_cx_abs = e_cx * main_e_w
+                e_cy_abs = e_cy * main_e_h
+                e_w_abs = e_w_rel * main_e_w
+                e_h_abs = e_h_rel * main_e_h
+                
+                # Границы Extent бокса
+                e_x_min = e_cx_abs - e_w_abs / 2
+                e_y_min = e_cy_abs - e_h_abs / 2
+                e_x_max = e_cx_abs + e_w_abs / 2
+                e_y_max = e_cy_abs + e_h_abs / 2
+                
+                # Ищем соответствующий Core бокс (тот, который внутри Extent бокса)
+                matching_core_box = None
+                max_iou = 0.0
+                
+                for core_box in sample['gt_core_boxes']:
+                    c_cx, c_cy, c_w_rel, c_h_rel = core_box
+                    
+                    # Приводим Core бокс в абсолютные координаты
+                    c_cx_abs = c_cx * main_e_w
+                    c_cy_abs = c_cy * main_e_h
+                    c_w_abs = c_w_rel * main_e_w
+                    c_h_abs = c_h_rel * main_e_h
+                    
+                    # Проверяем, что центр Core бокса внутри Extent бокса
+                    if e_x_min <= c_cx_abs <= e_x_max and e_y_min <= c_cy_abs <= e_y_max:
+                        # Вычисляем IoU для выбора лучшего совпадения
+                        c_x_min = c_cx_abs - c_w_abs / 2
+                        c_y_min = c_cy_abs - c_h_abs / 2
+                        c_x_max = c_cx_abs + c_w_abs / 2
+                        c_y_max = c_cy_abs + c_h_abs / 2
+                        
+                        # Intersection
+                        inter_x_min = max(e_x_min, c_x_min)
+                        inter_y_min = max(e_y_min, c_y_min)
+                        inter_x_max = min(e_x_max, c_x_max)
+                        inter_y_max = min(e_y_max, c_y_max)
+                        
+                        inter_area = max(0, inter_x_max - inter_x_min) * max(0, inter_y_max - inter_y_min)
+                        extent_area = e_w_abs * e_h_abs
+                        core_area = c_w_abs * c_h_abs
+                        union_area = extent_area + core_area - inter_area
+                        
+                        iou = inter_area / union_area if union_area > 0 else 0
+                        
+                        if iou > max_iou:
+                            max_iou = iou
+                            matching_core_box = (c_cx_abs, c_cy_abs, c_w_abs, c_h_abs)
+                
+                # Если не нашли соответствующий Core бокс, пропускаем
+                if matching_core_box is None:
+                    if debug_samples <= 3:
+                        log_event(f"  SKIP: Не найден Core бокс для Extent=[{e_cx_abs:.1f}, {e_cy_abs:.1f}, {e_w_abs:.1f}, {e_h_abs:.1f}]", level='WARNING')
+                    skipped_crops_sample += 1
+                    continue
+                
+                c_cx_abs, c_cy_abs, c_w_abs, c_h_abs = matching_core_box
+                
+                if debug_samples <= 3 and crop_id < 3:
+                    log_event(f"  Matched: Extent=[{e_cx_abs:.1f}, {e_cy_abs:.1f}, {e_w_abs:.1f}, {e_h_abs:.1f}]")
+                    log_event(f"  Matched: Core=[{c_cx_abs:.1f}, {c_cy_abs:.1f}, {c_w_abs:.1f}, {c_h_abs:.1f}], IoU={max_iou:.3f}")
+                
+                # Проверяем, что Core бокс меньше Extent бокса
+                if c_w_abs > e_w_abs or c_h_abs > e_h_abs:
+                    if debug_samples <= 3 and crop_id < 3:
+                        log_event(f"  SKIP: Core больше Extent!", level='WARNING')
                     skipped_crops_sample += 1
                     continue
 
-                # xywh2xyxy + Extent crop
-                e_crop = extent_img.crop(
-                    (e_cx - e_w / 2, e_cy - e_h / 2,
-                     e_cx + e_w / 2, e_cy + e_h / 2)
-                )
+                # Вырезаем Extent кроп
+                e_x_min = e_cx_abs - e_w_abs / 2
+                e_y_min = e_cy_abs - e_h_abs / 2
+                e_x_max = e_cx_abs + e_w_abs / 2
+                e_y_max = e_cy_abs + e_h_abs / 2
+                
+                e_crop = extent_img.crop((e_x_min, e_y_min, e_x_max, e_y_max))
                 e_crop.save(output_path / f'{crop_id:06}{extent_img_extension}')
 
-                # сохраняем таргет(разрешение core кропа)
-                # Находим абсолютные координаты центра core-бокса на исходном фото
-                c_cx, c_cy = c_cx * main_c_w, c_cy * main_c_h
+                # Пересчитываем Core бокс в координаты относительно Extent кропа
+                # Центр Core бокса относительно левого верхнего угла Extent кропа
+                local_c_cx = c_cx_abs - e_x_min
+                local_c_cy = c_cy_abs - e_y_min
 
-                # Находим координаты левого верхнего угла extent-кропа
-                e_x_min = e_cx - e_w / 2
-                e_y_min = e_cy - e_h / 2
-
-                # Вычисляем центр core-бокса ВНУТРИ нашего вырезанного кропа
-                local_c_cx = c_cx - e_x_min
-                local_c_cy = c_cy - e_y_min
-
-                # Нормализуем значения (от 0 до 1) относительно размеров extent-кропа
-                norm_cx = local_c_cx / e_w
-                norm_cy = local_c_cy / e_h
-                norm_w = c_w / e_w
-                norm_h = c_h / e_h
+                # Нормализуем относительно размеров Extent кропа
+                norm_cx = local_c_cx / e_w_abs
+                norm_cy = local_c_cy / e_h_abs
+                norm_w = c_w_abs / e_w_abs
+                norm_h = c_h_abs / e_h_abs
+                
+                # Клиппинг координат в диапазон [0, 1] (убираем погрешности вычислений)
+                norm_cx = max(0.0, min(1.0, norm_cx))
+                norm_cy = max(0.0, min(1.0, norm_cy))
+                norm_w = max(0.0, min(1.0, norm_w))
+                norm_h = max(0.0, min(1.0, norm_h))
+                
+                # Проверяем валидность бокса (центр должен быть внутри, размеры > 0)
+                # Также проверяем, что бокс не выходит за границы (с эпсилоном для погрешностей float)
+                eps = 1e-2
+                x_min = norm_cx - norm_w / 2
+                y_min = norm_cy - norm_h / 2
+                x_max = norm_cx + norm_w / 2
+                y_max = norm_cy + norm_h / 2
+                
+                # Клиппим границы бокса с учётом эпсилона
+                x_min = max(0.0, min(1.0, x_min))
+                y_min = max(0.0, min(1.0, y_min))
+                x_max = max(0.0, min(1.0, x_max))
+                y_max = max(0.0, min(1.0, y_max))
+                
+                # Проверяем, что бокс не вырожденный (имеет ненулевую площадь)
+                if (x_max - x_min) <= eps or (y_max - y_min) <= eps:
+                    continue
+                
+                # Пересчитываем нормализованные координаты из клиппнутых границ
+                norm_cx = (x_min + x_max) / 2
+                norm_cy = (y_min + y_max) / 2
+                norm_w = x_max - x_min
+                norm_h = y_max - y_min
+                
+                if norm_w <= 0.01 or norm_h <= 0.01:  # Слишком маленький бокс
+                    continue
+                
+                # РАДИКАЛЬНАЯ ПРОВЕРКА: пропускаем боксы слишком близко к границам
+                # Это убирает проблемы с погрешностями float
+                margin = 0.001  # 0.1% отступ от границ
+                final_x_min = norm_cx - norm_w / 2
+                final_y_min = norm_cy - norm_h / 2
+                final_x_max = norm_cx + norm_w / 2
+                final_y_max = norm_cy + norm_h / 2
+                
+                if (final_x_min < margin or final_y_min < margin or 
+                    final_x_max > (1.0 - margin) or final_y_max > (1.0 - margin)):
+                    continue  # Пропускаем боксы у самых границ
 
                 # Сохраняем в формате YOLO (cx, cy, w, h)
+                # Округляем до 6 знаков после запятой и клиппим в строгий диапазон [0, 1]
+                norm_cx = round(max(0.0, min(1.0, norm_cx)), 6)
+                norm_cy = round(max(0.0, min(1.0, norm_cy)), 6)
+                norm_w = round(max(0.0, min(1.0, norm_w)), 6)
+                norm_h = round(max(0.0, min(1.0, norm_h)), 6)
+                
+                # Финальная проверка границ (после округления могут быть артефакты)
+                x_min_final = norm_cx - norm_w / 2
+                y_min_final = norm_cy - norm_h / 2
+                x_max_final = norm_cx + norm_w / 2
+                y_max_final = norm_cy + norm_h / 2
+                
+                # Если после округления вылезли за границы - клиппим ещё раз
+                if x_min_final < 0 or y_min_final < 0 or x_max_final > 1 or y_max_final > 1:
+                    x_min_final = max(0.0, x_min_final)
+                    y_min_final = max(0.0, y_min_final)
+                    x_max_final = min(1.0, x_max_final)
+                    y_max_final = min(1.0, y_max_final)
+                    
+                    # Пересчитываем из клиппнутых границ
+                    norm_cx = round((x_min_final + x_max_final) / 2, 6)
+                    norm_cy = round((y_min_final + y_max_final) / 2, 6)
+                    norm_w = round(x_max_final - x_min_final, 6)
+                    norm_h = round(y_max_final - y_min_final, 6)
+                
                 with open(output_path / f'{crop_id:06}.txt', 'wt', encoding='utf8') as f:
                     f.write(f'{norm_cx:.6f} {norm_cy:.6f} {norm_w:.6f} {norm_h:.6f}')
                 crop_id += 1
@@ -252,4 +374,3 @@ class CropRefinerDataset(Dataset):
 #     WORKDIR / 'dataset/HWR200/mobile_net_crops/extent',
 #     WORKDIR / 'dataset/HWR200/mobile_net_crops/core',
 # )
-

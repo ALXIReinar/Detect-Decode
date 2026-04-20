@@ -364,7 +364,7 @@ def train_run():
                 'beam_search_decoder_size': beam_size,
             }
             "Попытка сохранить веса"
-            save_path = models_dir.joinpath(f'model_epoch{epoch}.pt')
+            save_path = str(models_dir.joinpath(f'model_epoch{epoch}.pt'))
             try:
                 tmp_file = models_dir.joinpath(f'model_epoch{epoch}.tmp')
                 torch.save(checkpoint, save_path)
